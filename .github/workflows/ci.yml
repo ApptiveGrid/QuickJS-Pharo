@@ -1,0 +1,78 @@
+name: CI
+
+# Branches build through their pull request; push builds only main, so a
+# branch with an open pull request does not build twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  linux:
+    name: Debian 12, ${{ matrix.variant }}, Pharo ${{ matrix.pharo }}
+    runs-on: ubuntu-latest
+    container: debian:12
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [ng, bellard]
+        pharo: ['120', '130']
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential git ca-certificates curl unzip
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build the library and run the C tests
+        run: |
+          set -o pipefail
+          make -C shim VARIANT=${{ matrix.variant }} test 2>&1 | tee c-tests.log
+          echo "::notice title=C tests (${{ matrix.variant }})::$(grep -E 'PASSED|FAILED' c-tests.log | tail -n 1)"
+
+      - name: C tests under AddressSanitizer
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+        run: |
+          set -o pipefail
+          make -C shim VARIANT=${{ matrix.variant }} asan 2>&1 | tee asan.log
+          echo "::notice title=C tests under ASan (${{ matrix.variant }})::$(grep -E 'PASSED|FAILED' asan.log | tail -n 1)"
+
+      - name: Download Pharo ${{ matrix.pharo }} and the Linux VM
+        run: |
+          mkdir -p pharo
+          cd pharo
+          curl -sSfL https://get.pharo.org/64/${{ matrix.pharo }}+vm | bash
+          echo "::notice title=Pharo VM (${{ matrix.pharo }})::$(./pharo-vm/pharo --version | head -n 1)"
+
+      - name: Pharo tests
+        run: |
+          set -o pipefail
+          QJS_LIB=$PWD/build/${{ matrix.variant }}/libqjsshim.so QJS_REPO=$PWD \
+            ./pharo/pharo-vm/pharo --headless pharo/Pharo.image st scripts/run-tests.st 2>&1 | tee pharo-tests.log
+          echo "::notice title=Pharo ${{ matrix.pharo }} tests (${{ matrix.variant }})::$(grep -E '^Pharo |ran,' pharo-tests.log | tr '\n' ' ')"
+
+      # One annotation with the end of each log, readable without signing in
+      - name: Report the end of the logs
+        if: failure()
+        run: |
+          for log in c-tests.log asan.log pharo-tests.log; do
+            [ -f "$log" ] || continue
+            body=$(tail -n 60 "$log" | sed -e 's/%/%25/g' | sed -e ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=$log::$body"
+          done
+
+      - name: Keep the library
+        if: matrix.pharo == '120'
+        uses: actions/upload-artifact@v4
+        with:
+          name: libqjsshim-linux-x86_64-${{ matrix.variant }}
+          path: build/${{ matrix.variant }}/libqjsshim.so
