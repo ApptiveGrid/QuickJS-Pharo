@@ -1,10 +1,18 @@
 /*
- * qjs_shim — a flat C API over QuickJS for Pharo UFFI (spike).
+ * qjs_shim — a flat C API over QuickJS for Pharo UFFI.
  *
- * Pharo never sees a JSValue by value. Every JS value crosses the
- * boundary as a pointer to a heap copy (a "handle"); qjs_value_free
- * releases the reference and the copy. All other arguments and results
- * are pointers, integers, doubles or UTF-8 bytes.
+ * Pharo never sees a JSValue, a JSContext or a JSRuntime directly. It
+ * holds boxes: a runtime owner, context boxes and value boxes. The owner
+ * keeps track of every live box, so freeing works in any order:
+ *
+ *  - release frees the QuickJS side and may be called any number of
+ *    times. Releasing a runtime first releases all values and contexts
+ *    still alive in it.
+ *  - destroy releases and then frees the box itself. It is meant for the
+ *    finalizer and must be called exactly once per box. A box of a
+ *    released runtime only frees its own memory.
+ *
+ * All other arguments and results are integers, doubles or bytes.
  */
 #ifndef QJS_SHIM_H
 #define QJS_SHIM_H
@@ -25,34 +33,49 @@ enum {
     QJS_TYPE_BIGINT    = 8,
     QJS_TYPE_SYMBOL    = 9,
     QJS_TYPE_EXCEPTION = 10,
-    QJS_TYPE_OTHER     = 11
+    QJS_TYPE_OTHER     = 11,
+    QJS_TYPE_RELEASED  = 12
 };
 
-/* runtime: one per thread, owns the heap and the limits */
-JSRuntime *qjs_runtime_new(void);
-void qjs_runtime_free(JSRuntime *rt);
-void qjs_runtime_set_memory_limit(JSRuntime *rt, size_t limit);
-void qjs_runtime_set_timeout_ms(JSRuntime *rt, int64_t timeout_ms);
+typedef struct QJSOwner QJSOwner;
+typedef struct QJSContextBox QJSContextBox;
+typedef struct QJSValueBox QJSValueBox;
+
 int qjs_has_intl(void);
+int64_t qjs_live_owners(void);
 
-/* context: a global object with the standard intrinsics */
-JSContext *qjs_context_new(JSRuntime *rt);
-void qjs_context_free(JSContext *ctx);
+/* runtime: one per thread, owns the heap and the limits */
+QJSOwner *qjs_runtime_new(void);
+void qjs_runtime_release(QJSOwner *owner);
+void qjs_runtime_destroy(QJSOwner *owner);
+int qjs_runtime_is_live(QJSOwner *owner);
+void qjs_runtime_set_memory_limit(QJSOwner *owner, size_t limit);
+void qjs_runtime_set_timeout_ms(QJSOwner *owner, int64_t timeout_ms);
 
-/* evaluation: always returns a handle, which may be an exception */
-JSValue *qjs_eval(JSContext *ctx, const char *source, size_t length);
-JSValue *qjs_exception(JSContext *ctx);
+/* context: a global object with the standard intrinsics;
+   NULL if the runtime is released */
+QJSContextBox *qjs_context_new(QJSOwner *owner);
+void qjs_context_release(QJSContextBox *context);
+void qjs_context_destroy(QJSContextBox *context);
+int qjs_context_is_live(QJSContextBox *context);
 
-/* values */
-int qjs_value_type(JSContext *ctx, JSValue *value);
-int qjs_value_is_int(JSValue *value);
-int qjs_value_to_bool(JSContext *ctx, JSValue *value);
-int64_t qjs_value_to_int64(JSContext *ctx, JSValue *value);
-double qjs_value_to_float64(JSContext *ctx, JSValue *value);
-const char *qjs_value_to_utf8(JSContext *ctx, JSValue *value, size_t *length);
-void qjs_utf8_free(JSContext *ctx, const char *utf8);
-JSValue *qjs_value_to_json(JSContext *ctx, JSValue *value);
-JSValue *qjs_get_property(JSContext *ctx, JSValue *object, const char *name);
-void qjs_value_free(JSContext *ctx, JSValue *value);
+/* evaluation: a value box, which may hold an exception;
+   NULL if the context is released */
+QJSValueBox *qjs_eval(QJSContextBox *context, const char *source, size_t length);
+QJSValueBox *qjs_exception(QJSContextBox *context);
+
+/* values: need a live context, answer defaults otherwise */
+int qjs_value_type(QJSContextBox *context, QJSValueBox *value);
+int qjs_value_is_int(QJSValueBox *value);
+int qjs_value_to_bool(QJSContextBox *context, QJSValueBox *value);
+int64_t qjs_value_to_int64(QJSContextBox *context, QJSValueBox *value);
+double qjs_value_to_float64(QJSContextBox *context, QJSValueBox *value);
+char *qjs_value_to_utf8(QJSContextBox *context, QJSValueBox *value, size_t *length);
+QJSValueBox *qjs_value_to_json(QJSContextBox *context, QJSValueBox *value);
+QJSValueBox *qjs_get_property(QJSContextBox *context, QJSValueBox *object, const char *name);
+
+/* qjs_value_free releases and destroys a value box at once */
+void qjs_value_free(QJSValueBox *value);
+void qjs_bytes_free(char *bytes);
 
 #endif
