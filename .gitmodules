@@ -1,6 +1,0 @@
-[submodule "vendor/quickjs-ng"]
-	path = vendor/quickjs-ng
-	url = https://github.com/quickjs-ng/quickjs.git
-[submodule "vendor/quickjs-bellard"]
-	path = vendor/quickjs-bellard
-	url = https://github.com/bellard/quickjs.git

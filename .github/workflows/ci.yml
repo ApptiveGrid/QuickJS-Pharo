@@ -12,6 +12,12 @@ defaults:
   run:
     shell: bash
 
+# QuickJS is built with its own build, as it comes from its repository,
+# then libqjsshim is built against it. These are the versions under test.
+env:
+  QUICKJS_NG_VERSION: v0.17.0
+  QUICKJS_BELLARD_VERSION: 84e723f1ace5e3823cef8149dd0f890fe74b77ce
+
 jobs:
   linux:
     name: Debian 12, ${{ matrix.variant }}, Pharo ${{ matrix.pharo }}
@@ -26,16 +32,33 @@ jobs:
       - name: Install build tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential git ca-certificates curl unzip
+          apt-get install -y --no-install-recommends build-essential cmake git ca-certificates curl unzip
 
       - uses: actions/checkout@v7
-        with:
-          submodules: recursive
+
+      - name: Build quickjs-ng with its cmake, static and position independent
+        if: matrix.variant == 'ng'
+        run: |
+          git clone --depth 1 --branch "$QUICKJS_NG_VERSION" https://github.com/quickjs-ng/quickjs.git ../quickjs-src
+          cmake -S ../quickjs-src -B ../quickjs-build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_INSTALL_PREFIX=$PWD/../quickjs-install -DCMAKE_INSTALL_LIBDIR=lib
+          cmake --build ../quickjs-build -j
+          cmake --install ../quickjs-build
+          echo "::notice title=QuickJS (ng)::$QUICKJS_NG_VERSION"
+
+      - name: Build Bellard's QuickJS with its make, position independent
+        if: matrix.variant == 'bellard'
+        run: |
+          git clone https://github.com/bellard/quickjs.git ../quickjs-src
+          git -C ../quickjs-src checkout "$QUICKJS_BELLARD_VERSION"
+          make -C ../quickjs-src -j CC="cc -fPIC" QJSC_CC=cc install PREFIX=$PWD/../quickjs-install
+          echo "::notice title=QuickJS (bellard)::$QUICKJS_BELLARD_VERSION"
 
       - name: Build the library and run the C tests
         run: |
           set -o pipefail
-          make -C shim VARIANT=${{ matrix.variant }} test 2>&1 | tee c-tests.log
+          make -C shim VARIANT=${{ matrix.variant }} QUICKJS_PREFIX=$PWD/../quickjs-install test 2>&1 | tee c-tests.log
           echo "::notice title=C tests (${{ matrix.variant }})::$(grep -E 'PASSED|FAILED' c-tests.log | tail -n 1)"
 
       - name: C tests under AddressSanitizer
@@ -43,7 +66,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1
         run: |
           set -o pipefail
-          make -C shim VARIANT=${{ matrix.variant }} asan 2>&1 | tee asan.log
+          make -C shim VARIANT=${{ matrix.variant }} QUICKJS_PREFIX=$PWD/../quickjs-install asan 2>&1 | tee asan.log
           echo "::notice title=C tests under ASan (${{ matrix.variant }})::$(grep -E 'PASSED|FAILED' asan.log | tail -n 1)"
 
       - name: Download Pharo ${{ matrix.pharo }} and the Linux VM

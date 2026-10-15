@@ -75,9 +75,11 @@ static int64_t now_ms(void)
 
 /* The deadline is checked in C: QuickJS calls the interrupt handler very
    often, a callback into the image on every call would cost more than the
-   script itself. Bellard and quickjs-ng up to 0.17.0 pass the runtime; ng
-   master after 0.17.0 passes the context. Adapt when the ng pin moves. */
-static int interrupt_handler(JSRuntime *rt, void *opaque)
+   script itself. Bellard and quickjs-ng up to 0.17.0 pass the runtime as
+   the first argument, later quickjs-ng the context; the handler uses
+   neither, so it takes a plain pointer and fits whichever QuickJS it is
+   built against (the cast below). */
+static int interrupt_handler(void *runtime_or_context, void *opaque)
 {
     QJSOwner *owner = opaque;
     return owner->deadline_ms > 0 && now_ms() > owner->deadline_ms;
@@ -189,7 +191,7 @@ QJSOwner *qjs_runtime_new(void)
     owner->refs = 1;
     list_init(&owner->contexts);
     list_init(&owner->values);
-    JS_SetInterruptHandler(owner->rt, interrupt_handler, owner);
+    JS_SetInterruptHandler(owner->rt, (JSInterruptHandler *)interrupt_handler, owner);
     /* one class id for all runtimes, registered in each of them */
 #ifdef QJS_VERSION_MAJOR
     JS_NewClassID(owner->rt, &binding_class_id);

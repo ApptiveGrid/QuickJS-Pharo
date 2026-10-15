@@ -42,11 +42,9 @@ You can also hold a runtime and contexts yourself. `free` releases them at once 
 
 ## How it fits together
 
-- **`shim/`** holds a small C library, `libqjsshim`, linked together with QuickJS. QuickJS passes `JSValue` by value and keeps many helpers `static inline`, so UFFI cannot call it directly. The shim gives Pharo a flat API of boxes for runtimes, contexts and values; all other values are integers, doubles or UTF-8 bytes. The runtime box keeps track of every context and value box, so they can be released and destroyed in any order (see `qjs_shim.h`). Time and memory limits are checked in C.
+- **`shim/`** holds a small C library, `libqjsshim`, built against an installed QuickJS. This repository does not contain QuickJS itself. QuickJS passes `JSValue` by value and keeps many helpers `static inline`, so UFFI cannot call it directly. The shim gives Pharo a flat API of boxes for runtimes, contexts and values; all other values are integers, doubles or UTF-8 bytes. The runtime box keeps track of every context and value box, so they can be released and destroyed in any order (see `qjs_shim.h`). Time and memory limits are checked in C.
 - **`src/`** holds the Pharo packages (Tonel). `QuickJS-Core` contains `QJSLibrary` (UFFI), `QJSRuntime`, `QJSContext`, `QJSBinding` and `QJSError`; `QuickJS-Tests` contains the tests.
-- **`vendor/`** holds QuickJS as git submodules, both pinned:
-  - `quickjs-ng` at `v0.17.0`, the default.
-  - `quickjs-bellard` on `master`, which since 2026-10-10 carries experimental `Intl` and `Temporal` support.
+- **QuickJS** comes from its own repository, built with its own build. Two variants work: [quickjs-ng](https://github.com/quickjs-ng/quickjs) (the default, tested at `v0.17.0`) and [Bellard's QuickJS](https://github.com/bellard/quickjs), whose `master` carries experimental `Intl` and `Temporal` support since 2026-10-10.
 
 Results are converted as follows:
 - `undefined` and `null` become `nil`.
@@ -56,18 +54,33 @@ Results are converted as follows:
 - A binding comes back as the Pharo object it stands for.
 - A JS exception is signalled as `QJSError`, carrying the JS message and stack.
 
-Not there yet: promises (the job queue), and a build for Linux in CI.
+Not there yet: promises (the job queue).
 
 ## Building
 
+First build QuickJS with its own build, as a static library compiled position independent. Then build the shim against it; the static QuickJS is linked into `libqjsshim`, so that one library is all an image needs.
+
+quickjs-ng with its cmake:
+
 ```bash
-git submodule update --init
-cd shim
-make test                   # quickjs-ng, writes build/ng/libqjsshim.(dylib|so)
-make VARIANT=bellard test   # Bellard's QuickJS with Intl, writes build/bellard/
+git clone --branch v0.17.0 https://github.com/quickjs-ng/quickjs.git
+cmake -S quickjs -B quickjs-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+  -DCMAKE_INSTALL_PREFIX=$HOME/quickjs-ng -DCMAKE_INSTALL_LIBDIR=lib
+cmake --build quickjs-build && cmake --install quickjs-build
+make -C shim QUICKJS_PREFIX=$HOME/quickjs-ng test     # writes build/ng/libqjsshim.(dylib|so)
 ```
 
-`make test` also builds and runs `test_shim`, which exercises the shim from C without Pharo. `make asan` (with or without `VARIANT=bellard`) runs the same test under AddressSanitizer.
+Bellard's QuickJS with its make (`QJSC_CC` keeps the flag out of the compiler name it records):
+
+```bash
+git clone https://github.com/bellard/quickjs.git quickjs-bellard
+make -C quickjs-bellard CC="cc -fPIC" QJSC_CC=cc install PREFIX=$HOME/quickjs-bellard-install
+make -C shim VARIANT=bellard QUICKJS_PREFIX=$HOME/quickjs-bellard-install test   # writes build/bellard/
+```
+
+On a Mac without a static QuickJS, `brew install quickjs-ng` and a plain `make -C shim test` work too; the shim then links Homebrew's shared `libqjs`.
+
+`make test` also builds and runs `test_shim`, which exercises the shim from C without Pharo. `make asan` runs the same test under AddressSanitizer. The CI builds both variants on Debian 12 and runs the C and Pharo tests with Pharo 12 and 13.
 
 ## Loading and testing in Pharo
 
