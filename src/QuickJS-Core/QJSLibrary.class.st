@@ -32,9 +32,10 @@ QJSLibrary >> bytesFree: bytes [
 ]
 
 { #category : 'primitives - values' }
-QJSLibrary >> context: context getProperty: aString of: value [
+QJSLibrary >> context: context getProperty: name of: value [
+	"name is a NUL-terminated UTF-8 ByteArray"
 
-	^ self ffiCall: #( void * qjs_get_property #( void * context , void * value , String aString ) )
+	^ self ffiCall: #( void * qjs_get_property #( void * context , void * value , void * name ) )
 ]
 
 { #category : 'primitives - values' }
@@ -179,4 +180,114 @@ QJSLibrary >> valueFree: value [
 QJSLibrary >> valueIsInt: value [
 
 	^ self ffiCall: #( int qjs_value_is_int #( void * value ) )
+]
+
+{ #category : 'primitives - structure' }
+QJSLibrary >> context: context arrayLength: array [
+
+	^ self ffiCall: #( int64 qjs_array_length #( void * context , void * array ) )
+]
+
+{ #category : 'primitives - bindings' }
+QJSLibrary >> context: context bindingId: value [
+
+	^ self ffiCall: #( int64 qjs_binding_id #( void * context , void * value ) )
+]
+
+{ #category : 'primitives - bindings' }
+QJSLibrary >> context: context define: binding name: name id: id selector: selector [
+
+	^ self ffiCall: #( int qjs_binding_define #( void * context , void * binding , String name , int64 id , String selector ) )
+]
+
+{ #category : 'primitives - structure' }
+QJSLibrary >> context: context getIndex: index of: array [
+
+	^ self ffiCall: #( void * qjs_get_index #( void * context , void * array , uint32 index ) )
+]
+
+{ #category : 'primitives - constructors' }
+QJSLibrary >> context: context newBinding: id [
+
+	^ self ffiCall: #( void * qjs_new_binding #( void * context , int64 id ) )
+]
+
+{ #category : 'primitives - constructors' }
+QJSLibrary >> context: context newBool: anInteger [
+
+	^ self ffiCall: #( void * qjs_new_bool #( void * context , int anInteger ) )
+]
+
+{ #category : 'primitives - constructors' }
+QJSLibrary >> context: context newFloat64: aFloat [
+
+	^ self ffiCall: #( void * qjs_new_float64 #( void * context , double aFloat ) )
+]
+
+{ #category : 'primitives - constructors' }
+QJSLibrary >> context: context newInt64: anInteger [
+
+	^ self ffiCall: #( void * qjs_new_int64 #( void * context , int64 anInteger ) )
+]
+
+{ #category : 'primitives - constructors' }
+QJSLibrary >> context: context newString: bytes length: length [
+
+	^ self ffiCall: #( void * qjs_new_string #( void * context , void * bytes , size_t length ) )
+]
+
+{ #category : 'primitives - structure' }
+QJSLibrary >> context: context objectKeys: object [
+
+	^ self ffiCall: #( void * qjs_object_keys #( void * context , void * object ) )
+]
+
+{ #category : 'primitives - structure' }
+QJSLibrary >> context: context setGlobal: name to: value [
+	"name is a NUL-terminated UTF-8 ByteArray"
+
+	^ self ffiCall: #( int qjs_set_global #( void * context , void * name , void * value ) )
+]
+
+{ #category : 'primitives - structure' }
+QJSLibrary >> context: context setIndex: index of: array to: value [
+
+	^ self ffiCall: #( int qjs_set_index #( void * context , void * array , uint32 index , void * value ) )
+]
+
+{ #category : 'primitives - structure' }
+QJSLibrary >> context: context setProperty: name of: object to: value [
+	"name is a NUL-terminated UTF-8 ByteArray"
+
+	^ self ffiCall: #( int qjs_set_property #( void * context , void * object , void * name , void * value ) )
+]
+
+{ #category : 'primitives - constructors' }
+QJSLibrary >> newArray: context [
+
+	^ self ffiCall: #( void * qjs_new_array #( void * context ) )
+]
+
+{ #category : 'primitives - constructors' }
+QJSLibrary >> newNull: context [
+
+	^ self ffiCall: #( void * qjs_new_null #( void * context ) )
+]
+
+{ #category : 'primitives - constructors' }
+QJSLibrary >> newObject: context [
+
+	^ self ffiCall: #( void * qjs_new_object #( void * context ) )
+]
+
+{ #category : 'primitives - bindings' }
+QJSLibrary >> runtime: owner releasedBindings: buffer capacity: capacity [
+
+	^ self ffiCall: #( int qjs_released_bindings #( void * owner , void * buffer , int capacity ) )
+]
+
+{ #category : 'primitives - bindings' }
+QJSLibrary >> setCallback: callback [
+
+	^ self ffiCall: #( void qjs_set_callback #( FFICallback callback ) )
 ]

@@ -162,10 +162,128 @@ static void test_any_order(void)
     check("100 contexts, some released twice", qjs_live_owners() == 0);
 }
 
+/* A stand-in for Pharo: object 7 answers name, add: and fail, and can
+   evaluate JS from inside a call. */
+static int calls = 0;
+
+static int fake_pharo(QJSContextBox *ctx, int64_t id, QJSValueBox *selector,
+                      int argc, QJSValueBox **argv, QJSValueBox **answer)
+{
+    size_t length;
+    char *name = qjs_value_to_utf8(ctx, selector, &length);
+    int status = 0;
+    calls++;
+    if (id != 7) {
+        *answer = qjs_new_string(ctx, "unknown object", 14);
+        status = 1;
+    } else if (strcmp(name, "name") == 0 && argc == 0) {
+        *answer = qjs_new_string(ctx, "Grid", 4);
+    } else if (strcmp(name, "add:") == 0 && argc == 1) {
+        *answer = qjs_new_int64(ctx, 40 + qjs_value_to_int64(ctx, argv[0]));
+    } else if (strcmp(name, "nested") == 0) {
+        *answer = qjs_eval(ctx, "6 * 7", 5);
+    } else {
+        *answer = qjs_new_string(ctx, "boom from Pharo", 15);
+        status = 1;
+    }
+    qjs_bytes_free(name);
+    return status;
+}
+
+static void test_bindings(void)
+{
+    QJSOwner *rt = qjs_runtime_new();
+    QJSContextBox *ctx = qjs_context_new(rt);
+    QJSValueBox *grid, *v, *e;
+    int64_t ids[8];
+
+    qjs_set_callback(fake_pharo);
+    grid = qjs_new_binding(ctx, 7);
+    qjs_binding_define(ctx, grid, "name", 7, "name");
+    qjs_binding_define(ctx, grid, "add_", 7, "add:");
+    qjs_binding_define(ctx, grid, "nested", 7, "nested");
+    qjs_binding_define(ctx, grid, "fail", 7, "fail");
+    qjs_set_global(ctx, "grid", grid);
+    check("binding has its id", qjs_binding_id(ctx, grid) == 7);
+    check("binding has the binding type", qjs_value_type(ctx, grid) == QJS_TYPE_BINDING);
+    qjs_value_free(grid);
+
+    v = eval(ctx, "grid.name() + ' ' + grid.add_(2)");
+    check("JS calls into Pharo", string_equals(ctx, v, "Grid 42") && calls == 2);
+    qjs_value_free(v);
+
+    v = eval(ctx, "grid.nested() + 1");
+    check("Pharo evaluates JS from inside a call", qjs_value_to_int64(ctx, v) == 43);
+    qjs_value_free(v);
+
+    v = eval(ctx, "grid.fail()");
+    check("a failing call throws in JS", qjs_value_type(ctx, v) == QJS_TYPE_EXCEPTION);
+    qjs_value_free(v);
+    e = qjs_exception(ctx);
+    check("with the message from Pharo", string_equals(ctx, e, "Error: boom from Pharo"));
+    qjs_value_free(e);
+
+    v = eval(ctx, "try { grid.fail() } catch (e) { 'caught ' + e.message }");
+    check("JS can catch it", string_equals(ctx, v, "caught boom from Pharo"));
+    qjs_value_free(v);
+
+    v = eval(ctx, "typeof grid.size");
+    check("an unexposed selector does not exist", string_equals(ctx, v, "undefined"));
+    qjs_value_free(v);
+
+    check("nothing released while JS holds it", qjs_released_bindings(rt, ids, 8) == 0);
+    qjs_value_free(eval(ctx, "delete globalThis.grid"));
+    check("JS letting go reports the id", qjs_released_bindings(rt, ids, 8) == 1 && ids[0] == 7);
+
+    v = eval(ctx, "[1, 'two', {three: 3}]");
+    check("array length", qjs_array_length(ctx, v) == 3);
+    e = qjs_get_index(ctx, v, 1);
+    check("array element", string_equals(ctx, e, "two"));
+    qjs_value_free(e);
+    e = qjs_get_index(ctx, v, 2);
+    {
+        QJSValueBox *keys = qjs_object_keys(ctx, e), *key = qjs_get_index(ctx, keys, 0);
+        check("object keys", qjs_array_length(ctx, keys) == 1 && string_equals(ctx, key, "three"));
+        qjs_value_free(key);
+        qjs_value_free(keys);
+    }
+    qjs_value_free(e);
+    qjs_value_free(v);
+
+    v = qjs_new_array(ctx);
+    e = qjs_new_float64(ctx, 1.5);
+    qjs_set_index(ctx, v, 0, e);
+    qjs_value_free(e);
+    e = qjs_new_object(ctx);
+    {
+        QJSValueBox *t = qjs_new_bool(ctx, 1);
+        qjs_set_property(ctx, e, "ok", t);
+        qjs_value_free(t);
+    }
+    qjs_set_index(ctx, v, 1, e);
+    qjs_value_free(e);
+    qjs_set_global(ctx, "built", v);
+    qjs_value_free(v);
+    v = eval(ctx, "JSON.stringify(built)");
+    check("values built from outside", string_equals(ctx, v, "[1.5,{\"ok\":true}]"));
+    qjs_value_free(v);
+
+    grid = qjs_new_binding(ctx, 7);
+    qjs_set_global(ctx, "kept", grid);
+    qjs_value_free(grid);
+    qjs_runtime_release(rt);
+    check("a released runtime reports nothing", qjs_released_bindings(rt, ids, 8) == 0);
+    qjs_context_destroy(ctx);
+    qjs_runtime_destroy(rt);
+    check("bindings leave nothing behind", qjs_live_owners() == 0);
+    qjs_set_callback(NULL);
+}
+
 int main(void)
 {
     test_values();
     test_any_order();
+    test_bindings();
     printf("%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
     return failures ? 1 : 0;
 }
