@@ -28,7 +28,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends build-essential git ca-certificates curl unzip
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -72,7 +72,7 @@ jobs:
 
       - name: Keep the library
         if: matrix.pharo == '120'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libqjsshim-linux-x86_64-${{ matrix.variant }}
           path: build/${{ matrix.variant }}/libqjsshim.so
