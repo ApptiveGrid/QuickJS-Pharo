@@ -14,9 +14,20 @@ struct QJSOwner {
     int64_t timeout_ms;
     int64_t deadline_ms;
     int64_t refs;       /* the runtime box itself plus every context and value box */
+    int depth;          /* nesting of qjs_eval, > 1 when Pharo evaluates from a callback */
     QJSLink contexts;
     QJSLink values;
+    int64_t *released;  /* ids of bindings JS has let go of, drained by Pharo */
+    int released_count;
+    int released_capacity;
 };
+
+/* What a JS binding object carries: the id under which Pharo keeps the
+   object. The owner is where the finalizer reports the id back. */
+typedef struct {
+    QJSOwner *owner;
+    int64_t id;
+} QJSBinding;
 
 struct QJSContextBox {
     QJSLink link;       /* first member: a link is its box */
@@ -32,6 +43,8 @@ struct QJSValueBox {
 };
 
 static int64_t live_owners = 0;
+static QJSPharoCallback pharo_callback = NULL;
+static JSClassID binding_class_id = 0;
 
 static void list_init(QJSLink *head)
 {
@@ -73,6 +86,7 @@ static int interrupt_handler(JSRuntime *rt, void *opaque)
 static void owner_unref(QJSOwner *owner)
 {
     if (--owner->refs == 0) {
+        free(owner->released);
         free(owner);
         live_owners--;
     }
@@ -121,6 +135,33 @@ static QJSValueBox *box_value(QJSContextBox *context, JSValue value)
     return box;
 }
 
+/* Runs inside the JS garbage collector, so it must not call into Pharo.
+   It only notes the id; Pharo drains the list after each evaluation. */
+static void binding_finalizer(JSRuntime *rt, JSValue value)
+{
+    QJSBinding *binding = JS_GetOpaque(value, binding_class_id);
+    QJSOwner *owner;
+    if (!binding)
+        return;
+    owner = binding->owner;
+    if (owner->released_count == owner->released_capacity) {
+        int capacity = owner->released_capacity ? owner->released_capacity * 2 : 64;
+        int64_t *grown = realloc(owner->released, capacity * sizeof(int64_t));
+        if (grown) {
+            owner->released = grown;
+            owner->released_capacity = capacity;
+        }
+    }
+    if (owner->released_count < owner->released_capacity)
+        owner->released[owner->released_count++] = binding->id;
+    free(binding);
+}
+
+static JSClassDef binding_class = {
+    "PharoObject",
+    .finalizer = binding_finalizer,
+};
+
 int qjs_has_intl(void)
 {
 #ifdef CONFIG_TEMPORAL_INTL
@@ -149,6 +190,14 @@ QJSOwner *qjs_runtime_new(void)
     list_init(&owner->contexts);
     list_init(&owner->values);
     JS_SetInterruptHandler(owner->rt, interrupt_handler, owner);
+    /* one class id for all runtimes, registered in each of them */
+#ifdef QJS_VERSION_MAJOR
+    JS_NewClassID(owner->rt, &binding_class_id);
+#else
+    if (binding_class_id == 0)
+        JS_NewClassID(&binding_class_id);
+#endif
+    JS_NewClass(owner->rt, binding_class_id, &binding_class);
     live_owners++;
     return owner;
 }
@@ -163,6 +212,8 @@ void qjs_runtime_release(QJSOwner *owner)
         context_release((QJSContextBox *)owner->contexts.next);
     JS_FreeRuntime(owner->rt);
     owner->rt = NULL;
+    /* Pharo drops all bindings of a released runtime at once */
+    owner->released_count = 0;
 }
 
 void qjs_runtime_destroy(QJSOwner *owner)
@@ -210,6 +261,7 @@ QJSContextBox *qjs_context_new(QJSOwner *owner)
     box->owner = owner;
     owner->refs++;
     list_add(&owner->contexts, &box->link);
+    JS_SetContextOpaque(box->ctx, box);
     return box;
 }
 
@@ -252,11 +304,17 @@ QJSValueBox *qjs_eval(QJSContextBox *context, const char *source, size_t length)
     memcpy(copy, source, length);
     copy[length] = '\0';
 
-    /* the calling thread's stack may differ between calls */
-    JS_UpdateStackTop(owner->rt);
-    owner->deadline_ms = owner->timeout_ms > 0 ? now_ms() + owner->timeout_ms : 0;
+    /* Only the outermost evaluation sets the stack top (the calling thread
+       may differ between calls) and the deadline; an evaluation from a
+       Pharo callback runs deeper on the same stack and within the same
+       deadline. */
+    if (owner->depth++ == 0) {
+        JS_UpdateStackTop(owner->rt);
+        owner->deadline_ms = owner->timeout_ms > 0 ? now_ms() + owner->timeout_ms : 0;
+    }
     result = JS_Eval(context->ctx, copy, length, "<pharo>", JS_EVAL_TYPE_GLOBAL);
-    owner->deadline_ms = 0;
+    if (--owner->depth == 0)
+        owner->deadline_ms = 0;
 
     free(copy);
     return box_value(context, result);
@@ -295,6 +353,8 @@ int qjs_value_type(QJSContextBox *context, QJSValueBox *value)
         return QJS_TYPE_BIGINT;
     if (JS_IsSymbol(v))
         return QJS_TYPE_SYMBOL;
+    if (JS_GetOpaque(v, binding_class_id))
+        return QJS_TYPE_BINDING;
 #ifdef QJS_VERSION_MAJOR
     if (JS_IsArray(v))
 #else
@@ -390,4 +450,225 @@ void qjs_value_free(QJSValueBox *value)
 void qjs_bytes_free(char *bytes)
 {
     free(bytes);
+}
+
+/* ---- calls from JS into Pharo ---- */
+
+void qjs_set_callback(QJSPharoCallback callback)
+{
+    pharo_callback = callback;
+}
+
+/* The one C function behind every exposed selector. func_data holds the
+   binding id and the Smalltalk selector; the arguments go to Pharo as
+   value boxes, the answer comes back as one. A status other than 0 means
+   Pharo failed, and the answer is the message to throw. */
+#ifdef QJS_VERSION_MAJOR
+static JSValue call_pharo(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic, JSValueConst *func_data)
+#else
+static JSValue call_pharo(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic, JSValue *func_data)
+#endif
+{
+    QJSContextBox *context = JS_GetContextOpaque(ctx);
+    QJSValueBox **args = NULL;
+    QJSValueBox *selector, *answer = NULL;
+    int64_t id = 0;
+    int status;
+    JSValue result;
+
+    if (!pharo_callback || !context)
+        return JS_ThrowInternalError(ctx, "no Pharo callback registered");
+    JS_ToInt64(ctx, &id, func_data[0]);
+    selector = box_value(context, JS_DupValue(ctx, func_data[1]));
+    if (argc > 0) {
+        args = calloc(argc, sizeof(QJSValueBox *));
+        if (!args) {
+            qjs_value_free(selector);
+            return JS_ThrowOutOfMemory(ctx);
+        }
+        for (int i = 0; i < argc; i++)
+            args[i] = box_value(context, JS_DupValue(ctx, argv[i]));
+    }
+
+    status = pharo_callback(context, id, selector, argc, args, &answer);
+
+    for (int i = 0; i < argc; i++)
+        qjs_value_free(args[i]);
+    free(args);
+    qjs_value_free(selector);
+
+    result = value_live(answer) ? JS_DupValue(ctx, answer->value) : JS_UNDEFINED;
+    qjs_value_free(answer);
+    if (status == 0)
+        return result;
+    if (JS_IsString(result)) {
+        JSValue error = JS_NewError(ctx);
+        JS_DefinePropertyValueStr(ctx, error, "message", result, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+        return JS_Throw(ctx, error);
+    }
+    JS_FreeValue(ctx, result);
+    return JS_ThrowInternalError(ctx, "Pharo callback failed");
+}
+
+/* ---- building values from Pharo ---- */
+
+QJSValueBox *qjs_new_undefined(QJSContextBox *context)
+{
+    return context_live(context) ? box_value(context, JS_UNDEFINED) : NULL;
+}
+
+QJSValueBox *qjs_new_null(QJSContextBox *context)
+{
+    return context_live(context) ? box_value(context, JS_NULL) : NULL;
+}
+
+QJSValueBox *qjs_new_bool(QJSContextBox *context, int value)
+{
+    return context_live(context) ? box_value(context, JS_NewBool(context->ctx, value != 0)) : NULL;
+}
+
+QJSValueBox *qjs_new_int64(QJSContextBox *context, int64_t value)
+{
+    return context_live(context) ? box_value(context, JS_NewInt64(context->ctx, value)) : NULL;
+}
+
+QJSValueBox *qjs_new_float64(QJSContextBox *context, double value)
+{
+    return context_live(context) ? box_value(context, JS_NewFloat64(context->ctx, value)) : NULL;
+}
+
+QJSValueBox *qjs_new_string(QJSContextBox *context, const char *utf8, size_t length)
+{
+    return context_live(context) ? box_value(context, JS_NewStringLen(context->ctx, utf8, length)) : NULL;
+}
+
+QJSValueBox *qjs_new_array(QJSContextBox *context)
+{
+    return context_live(context) ? box_value(context, JS_NewArray(context->ctx)) : NULL;
+}
+
+QJSValueBox *qjs_new_object(QJSContextBox *context)
+{
+    return context_live(context) ? box_value(context, JS_NewObject(context->ctx)) : NULL;
+}
+
+/* A JS object standing for the Pharo object Pharo keeps under id. It has
+   no methods until qjs_binding_define adds them. */
+QJSValueBox *qjs_new_binding(QJSContextBox *context, int64_t id)
+{
+    QJSBinding *binding;
+    JSValue object;
+    if (!context_live(context))
+        return NULL;
+    binding = malloc(sizeof(QJSBinding));
+    if (!binding)
+        return NULL;
+    binding->owner = context->owner;
+    binding->id = id;
+    object = JS_NewObjectClass(context->ctx, binding_class_id);
+    if (JS_IsException(object)) {
+        free(binding);
+        return box_value(context, object);
+    }
+    JS_SetOpaque(object, binding);
+    return box_value(context, object);
+}
+
+/* Adds the method name to a binding, calling selector on the Pharo object id */
+int qjs_binding_define(QJSContextBox *context, QJSValueBox *binding, const char *name, int64_t id, const char *selector)
+{
+    JSValue data[2];
+    JSValue function;
+    if (!context_live(context) || !value_live(binding))
+        return -1;
+    data[0] = JS_NewInt64(context->ctx, id);
+    data[1] = JS_NewString(context->ctx, selector);
+    function = JS_NewCFunctionData(context->ctx, call_pharo, 0, 0, 2, data);
+    JS_FreeValue(context->ctx, data[1]);
+    if (JS_IsException(function))
+        return -1;
+    return JS_DefinePropertyValueStr(context->ctx, binding->value, name, function, JS_PROP_CONFIGURABLE);
+}
+
+int64_t qjs_binding_id(QJSContextBox *context, QJSValueBox *value)
+{
+    QJSBinding *binding;
+    if (!context_live(context) || !value_live(value))
+        return -1;
+    binding = JS_GetOpaque(value->value, binding_class_id);
+    return binding ? binding->id : -1;
+}
+
+int qjs_released_bindings(QJSOwner *owner, int64_t *ids, int capacity)
+{
+    int count;
+    if (!owner)
+        return 0;
+    count = owner->released_count < capacity ? owner->released_count : capacity;
+    memcpy(ids, owner->released + owner->released_count - count, count * sizeof(int64_t));
+    owner->released_count -= count;
+    return count;
+}
+
+/* ---- structure, both ways ---- */
+
+int qjs_set_index(QJSContextBox *context, QJSValueBox *array, uint32_t index, QJSValueBox *value)
+{
+    if (!context_live(context) || !value_live(array) || !value_live(value))
+        return -1;
+    return JS_SetPropertyUint32(context->ctx, array->value, index, JS_DupValue(context->ctx, value->value));
+}
+
+int qjs_set_property(QJSContextBox *context, QJSValueBox *object, const char *name, QJSValueBox *value)
+{
+    if (!context_live(context) || !value_live(object) || !value_live(value))
+        return -1;
+    return JS_SetPropertyStr(context->ctx, object->value, name, JS_DupValue(context->ctx, value->value));
+}
+
+int qjs_set_global(QJSContextBox *context, const char *name, QJSValueBox *value)
+{
+    JSValue global;
+    int result;
+    if (!context_live(context) || !value_live(value))
+        return -1;
+    global = JS_GetGlobalObject(context->ctx);
+    result = JS_SetPropertyStr(context->ctx, global, name, JS_DupValue(context->ctx, value->value));
+    JS_FreeValue(context->ctx, global);
+    return result;
+}
+
+int64_t qjs_array_length(QJSContextBox *context, QJSValueBox *array)
+{
+    JSValue length;
+    int64_t result = 0;
+    if (!context_live(context) || !value_live(array))
+        return 0;
+    length = JS_GetPropertyStr(context->ctx, array->value, "length");
+    JS_ToInt64(context->ctx, &result, length);
+    JS_FreeValue(context->ctx, length);
+    return result;
+}
+
+QJSValueBox *qjs_get_index(QJSContextBox *context, QJSValueBox *array, uint32_t index)
+{
+    if (!context_live(context) || !value_live(array))
+        return NULL;
+    return box_value(context, JS_GetPropertyUint32(context->ctx, array->value, index));
+}
+
+/* Object.keys(object), as an array box */
+QJSValueBox *qjs_object_keys(QJSContextBox *context, QJSValueBox *object)
+{
+    JSValue global, constructor, keys, result;
+    if (!context_live(context) || !value_live(object))
+        return NULL;
+    global = JS_GetGlobalObject(context->ctx);
+    constructor = JS_GetPropertyStr(context->ctx, global, "Object");
+    keys = JS_GetPropertyStr(context->ctx, constructor, "keys");
+    result = JS_Call(context->ctx, keys, constructor, 1, &object->value);
+    JS_FreeValue(context->ctx, keys);
+    JS_FreeValue(context->ctx, constructor);
+    JS_FreeValue(context->ctx, global);
+    return box_value(context, result);
 }

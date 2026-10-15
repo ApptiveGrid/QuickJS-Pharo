@@ -34,7 +34,8 @@ enum {
     QJS_TYPE_SYMBOL    = 9,
     QJS_TYPE_EXCEPTION = 10,
     QJS_TYPE_OTHER     = 11,
-    QJS_TYPE_RELEASED  = 12
+    QJS_TYPE_RELEASED  = 12,
+    QJS_TYPE_BINDING   = 13
 };
 
 typedef struct QJSOwner QJSOwner;
@@ -77,5 +78,40 @@ QJSValueBox *qjs_get_property(QJSContextBox *context, QJSValueBox *object, const
 /* qjs_value_free releases and destroys a value box at once */
 void qjs_value_free(QJSValueBox *value);
 void qjs_bytes_free(char *bytes);
+
+/* Calls from JS into Pharo. Pharo registers one callback; every exposed
+   selector reaches it with the binding id, the Smalltalk selector as a
+   string box and the arguments as value boxes, all owned by the shim. The
+   callback stores its answer, a value box it hands over, in *answer and
+   answers 0, or a non-zero status with a string box as the error message. */
+typedef int (*QJSPharoCallback)(QJSContextBox *context, int64_t id, QJSValueBox *selector,
+                                int argc, QJSValueBox **argv, QJSValueBox **answer);
+void qjs_set_callback(QJSPharoCallback callback);
+
+/* building values from Pharo; NULL if the context is released */
+QJSValueBox *qjs_new_undefined(QJSContextBox *context);
+QJSValueBox *qjs_new_null(QJSContextBox *context);
+QJSValueBox *qjs_new_bool(QJSContextBox *context, int value);
+QJSValueBox *qjs_new_int64(QJSContextBox *context, int64_t value);
+QJSValueBox *qjs_new_float64(QJSContextBox *context, double value);
+QJSValueBox *qjs_new_string(QJSContextBox *context, const char *utf8, size_t length);
+QJSValueBox *qjs_new_array(QJSContextBox *context);
+QJSValueBox *qjs_new_object(QJSContextBox *context);
+
+/* Bindings: a JS object standing for the Pharo object Pharo keeps under
+   id, with one method per exposed selector. When JS lets go of it, its id
+   shows up in qjs_released_bindings, to be drained after an evaluation. */
+QJSValueBox *qjs_new_binding(QJSContextBox *context, int64_t id);
+int qjs_binding_define(QJSContextBox *context, QJSValueBox *binding, const char *name, int64_t id, const char *selector);
+int64_t qjs_binding_id(QJSContextBox *context, QJSValueBox *value);
+int qjs_released_bindings(QJSOwner *owner, int64_t *ids, int capacity);
+
+/* structure: setters do not take over the value box */
+int qjs_set_index(QJSContextBox *context, QJSValueBox *array, uint32_t index, QJSValueBox *value);
+int qjs_set_property(QJSContextBox *context, QJSValueBox *object, const char *name, QJSValueBox *value);
+int qjs_set_global(QJSContextBox *context, const char *name, QJSValueBox *value);
+int64_t qjs_array_length(QJSContextBox *context, QJSValueBox *array);
+QJSValueBox *qjs_get_index(QJSContextBox *context, QJSValueBox *array, uint32_t index);
+QJSValueBox *qjs_object_keys(QJSContextBox *context, QJSValueBox *object);
 
 #endif

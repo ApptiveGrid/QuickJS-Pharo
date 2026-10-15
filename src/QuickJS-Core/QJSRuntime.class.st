@@ -4,13 +4,17 @@ I am a QuickJS runtime: one heap with its limits. A runtime belongs to one threa
 Usually you do not hold me yourself: `QJSRuntime evaluate: '6 * 7'` or `QJSRuntime during: [ :context | ... ]` give a fresh runtime and context and release both afterwards. A runtime costs next to nothing; the context is what takes time to build (some 40-70 µs).
 
 If you hold me, #free releases me with all my contexts and values, and may be called again. If you forget it, finalization releases me when I am garbage, in whatever order my contexts go. After an image restart I am stale and signal QJSError instead of reaching into freed memory.
+
+I also keep the Pharo objects handed to JS (see QJSContext>>#at:put:exposing:), under ids JS knows them by, until JS lets go of them or I am released.
 "
 Class {
 	#name : 'QJSRuntime',
 	#superclass : 'Object',
 	#instVars : [
 		'handle',
-		'session'
+		'session',
+		'bindings',
+		'nextBindingId'
 	],
 	#category : 'QuickJS-Core',
 	#package : 'QuickJS-Core'
@@ -50,6 +54,18 @@ QJSRuntime class >> liveCount [
 	^ QJSLibrary uniqueInstance liveOwners
 ]
 
+{ #category : 'bindings' }
+QJSRuntime >> bindingAt: anId [
+
+	^ bindings at: anId ifAbsent: [ QJSError signal: 'QuickJS binding ' , anId printString , ' is unknown' ]
+]
+
+{ #category : 'bindings' }
+QJSRuntime >> bindingCount [
+
+	^ bindings size
+]
+
 { #category : 'private' }
 QJSRuntime >> checkLive [
 
@@ -61,7 +77,22 @@ QJSRuntime >> checkLive [
 QJSRuntime >> free [
 	"Release the runtime with all its contexts and values. Harmless when called again"
 
-	self isFromThisSession ifTrue: [ self library runtimeRelease: handle ]
+	self isFromThisSession ifTrue: [ self library runtimeRelease: handle ].
+	bindings removeAll
+]
+
+{ #category : 'bindings' }
+QJSRuntime >> dropReleasedBindings [
+	"Forget the objects JS has let go of. Their ids are noted by the JS garbage collector and collected here, after an evaluation, never from inside it"
+
+	| buffer count |
+	(bindings isEmpty or: [ self isLive not ]) ifTrue: [ ^ self ].
+	buffer := ExternalAddress allocate: 64 * 8.
+	[
+	[
+	count := self library runtime: handle releasedBindings: buffer capacity: 64.
+	1 to: count do: [ :i | bindings removeKey: (buffer signedLongLongAt: i - 1 * 8 + 1) ifAbsent: [ nil ] ].
+	count = 64 ] whileTrue ] ensure: [ buffer free ]
 ]
 
 { #category : 'accessing' }
@@ -74,6 +105,8 @@ QJSRuntime >> handle [
 QJSRuntime >> initialize [
 
 	super initialize.
+	bindings := Dictionary new.
+	nextBindingId := 0.
 	handle := self library runtimeNew.
 	handle isNull ifTrue: [ QJSError signal: 'QuickJS could not create a runtime' ].
 	session := Smalltalk session.
@@ -117,4 +150,13 @@ QJSRuntime >> timeoutMilliseconds: milliseconds [
 
 	self checkLive.
 	self library runtime: handle timeoutMilliseconds: milliseconds
+]
+
+{ #category : 'bindings' }
+QJSRuntime >> registerBinding: aBinding [
+	"Answer the id JS knows aBinding by"
+
+	nextBindingId := nextBindingId + 1.
+	bindings at: nextBindingId put: aBinding.
+	^ nextBindingId
 ]
