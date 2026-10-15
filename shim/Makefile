@@ -49,7 +49,14 @@ $(BUILD)/test_shim: test_shim.c $(LIB)
 test: all
 	$(BUILD)/test_shim
 
+# the C test linked statically with AddressSanitizer, to catch double frees
+asan: $(SRCS) qjs_shim.h test_shim.c
+	mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -O1 -fsanitize=address -fno-omit-frame-pointer -o $(BUILD)/test_shim_asan \
+		test_shim.c $(SRCS) -lm -lpthread
+	$(BUILD)/test_shim_asan
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test clean
+.PHONY: all test asan clean
