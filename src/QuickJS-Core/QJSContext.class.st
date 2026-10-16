@@ -1,7 +1,7 @@
 "
 I am a QuickJS context: a global object in a runtime. #eval: runs a script and answers its result as a Pharo value; a JS exception is signalled as a QJSError.
 
-Values cross in both directions the same way: nil and null (undefined becomes nil too), Booleans, numbers as Integer or Float, strings, sequenceable collections and arrays, dictionaries and plain objects. Every other Pharo object reaches JS as a binding: a JS object with one method per exposed selector, named PharoJS-style (#at:put: becomes at_put_). A binding coming back from JS is the Pharo object itself.
+Values cross in both directions the same way: nil and null (undefined becomes nil too), Booleans, numbers as Integer or Float, strings, sequenceable collections and arrays, dictionaries and plain objects. Every other Pharo object reaches JS as a binding: a JS object with one method per exposed selector. A method names itself in JS with a pragma (`at: key put: value <jsName: 'atPut'>`); without one the name is PharoJS-style (#at:put: becomes at_put_). Which selectors are exposed and what they are called are separate (see QJSBinding). A binding coming back from JS is the Pharo object itself.
 
 	context at: 'grid' put: aGrid exposing: #(name rows).
 	context at: 'grid' put: aGrid exposing: { AGGrid -> #(name rows). AGRow -> #(id name) }.
@@ -113,8 +113,8 @@ QJSContext >> bindingBoxFor: anObject exposure: aDictionary [
 	binding := QJSBinding object: anObject exposure: aDictionary.
 	id := runtime registerBinding: binding.
 	box := self library context: handle newBinding: id.
-	binding selectors do: [ :each |
-		self library context: handle define: box name: (self jsNameOf: each) id: id selector: each ].
+	binding names keysAndValuesDo: [ :name :selector |
+		self library context: handle define: box name: name id: id selector: selector ].
 	^ box
 ]
 
@@ -243,13 +243,6 @@ QJSContext >> isFromThisSession [
 QJSContext >> isLive [
 
 	^ self isFromThisSession and: [ (self library contextIsLive: handle) = 1 ]
-]
-
-{ #category : 'private - to JS' }
-QJSContext >> jsNameOf: aSelector [
-	"PharoJS-style: #at:put: becomes at_put_"
-
-	^ aSelector copyReplaceAll: ':' with: '_'
 ]
 
 { #category : 'accessing' }

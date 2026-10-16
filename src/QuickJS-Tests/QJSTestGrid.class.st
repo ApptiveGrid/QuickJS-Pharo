@@ -7,7 +7,8 @@ Class {
 	#instVars : [
 		'name',
 		'rows',
-		'context'
+		'context',
+		'values'
 	],
 	#category : 'QuickJS-Tests',
 	#package : 'QuickJS-Tests'
@@ -17,6 +18,20 @@ Class {
 QJSTestGrid class >> named: aString rows: names [
 
 	^ self new setName: aString rows: names
+]
+
+{ #category : 'accessing' }
+QJSTestGrid >> at: aKey [
+
+	<jsName: 'get'>
+	^ values at: aKey ifAbsent: [ nil ]
+]
+
+{ #category : 'accessing' }
+QJSTestGrid >> at: aKey put: aValue [
+
+	<jsName: 'atPut'>
+	^ values at: aKey put: aValue
 ]
 
 { #category : 'accessing' }
@@ -50,6 +65,14 @@ QJSTestGrid >> name [
 ]
 
 { #category : 'accessing' }
+QJSTestGrid >> nameAgain [
+	"Takes a name another selector already has"
+
+	<jsName: 'name'>
+	^ name
+]
+
+{ #category : 'accessing' }
 QJSTestGrid >> nested [
 	"Evaluates JS while JS is calling this method"
 
@@ -78,5 +101,6 @@ QJSTestGrid >> secret [
 QJSTestGrid >> setName: aString rows: names [
 
 	name := aString.
-	rows := names collect: [ :each | QJSTestRow named: each ]
+	rows := names collect: [ :each | QJSTestRow named: each ].
+	values := Dictionary new
 ]
