@@ -23,7 +23,15 @@ QJSRuntime during: [ :context |
 	context eval: 'grid.name() + " has " + grid.rowAt_(1)' ]
 ```
 
-Only the selectors you list exist in JS, named PharoJS-style: `#rowAt:` becomes `rowAt_`, and `#at:put:` becomes `at_put_`. To decide what JS may do with objects that come back from those calls, give a table of classes instead:
+Only the selectors you list exist in JS. Their names in JS are a separate matter: a method can name itself with a pragma,
+
+```smalltalk
+at: key put: value
+	<jsName: 'atPut'>
+	...
+```
+
+so JS calls `grid.atPut(key, value)`. Without a pragma the name is PharoJS-style: `#rowAt:` becomes `rowAt_`, and `#at:put:` becomes `at_put_`. The pragma names the method, it does not expose it; two exposed selectors with the same name in one binding signal a `QJSError`. To decide what JS may do with objects that come back from those calls, give a table of classes instead:
 
 ```smalltalk
 context at: 'grid' put: aGrid exposing: {
