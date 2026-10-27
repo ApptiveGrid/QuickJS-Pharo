@@ -78,10 +78,31 @@ QJSBindingTest >> testFollowUpObjectsUseTheTable [
 ]
 
 { #category : 'tests' }
+QJSBindingTest >> testInheritedPragmaAndOverrideWithout [
+	"The name comes from the method the object runs: #at:put: inherited with its pragma, #at: overridden without one"
+
+	context
+		at: 'grid'
+		put: (QJSTestSubGrid named: 'Kunden' rows: #(  ))
+		exposing: { (QJSTestGrid -> #( at:put: at: )) }.
+	self assert: (context eval: 'grid.atPut("k", 4); grid.at_("k")') equals: 40.
+	self assert: (context eval: 'typeof grid.get') equals: 'undefined'
+]
+
+{ #category : 'tests' }
 QJSBindingTest >> testKeywordSelectorIsNamedLikePharoJS [
 
 	context at: 'grid' put: grid exposing: #( rowAt: ).
 	self assert: (context eval: 'typeof grid.rowAt_') equals: 'function'
+]
+
+{ #category : 'tests' }
+QJSBindingTest >> testNameAloneDoesNotExpose [
+	"Naming and permission are separate: a method with <jsName:> that is not exposed does not exist in JS"
+
+	context at: 'grid' put: grid exposing: #( name ).
+	self assert: (context eval: 'typeof grid.atPut') equals: 'undefined'.
+	self assert: (context eval: 'typeof grid.at_put_') equals: 'undefined'
 ]
 
 { #category : 'tests' }
@@ -90,6 +111,15 @@ QJSBindingTest >> testNestedEvaluationFromPharo [
 	grid context: context.
 	context at: 'grid' put: grid exposing: #( nested ).
 	self assert: (context eval: 'grid.nested() + 1') equals: 43
+]
+
+{ #category : 'tests' }
+QJSBindingTest >> testPragmaNamesTheMethod [
+
+	context at: 'grid' put: grid exposing: #( at:put: at: rowAt: ).
+	self assert: (context eval: 'grid.atPut("k", 42); grid.get("k")') equals: 42.
+	self assert: (context eval: 'typeof grid.at_put_') equals: 'undefined'.
+	self assert: (context eval: 'typeof grid.rowAt_') equals: 'function'
 ]
 
 { #category : 'tests' }
@@ -122,6 +152,16 @@ QJSBindingTest >> testReleasedBindingsAreDropped [
 	context at: 'tmp' put: grid exposing: #( name ).
 	self assert: runtime bindingCount equals: 1.
 	context eval: 'delete globalThis.tmp'.
+	self assert: runtime bindingCount equals: 0
+]
+
+{ #category : 'tests' }
+QJSBindingTest >> testTwoSelectorsWithOneNameAreRefused [
+
+	self
+		should: [ context at: 'grid' put: grid exposing: #( name nameAgain ) ]
+		raise: QJSError
+		withExceptionDo: [ :error | self assert: (error messageText includesSubstring: 'JS name name') ].
 	self assert: runtime bindingCount equals: 0
 ]
 
