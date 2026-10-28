@@ -110,6 +110,18 @@ QJSLibrary >> exception: context [
 	^ self ffiCall: #( void * qjs_exception #( void * context ) )
 ]
 
+{ #category : 'primitives - functions' }
+QJSLibrary >> context: context call: function argc: argc argv: argv [
+
+	^ self ffiCall: #( void * qjs_call #( void * context , void * function , int argc , void * argv ) )
+]
+
+{ #category : 'primitives - functions' }
+QJSLibrary >> context: context dupValue: value [
+
+	^ self ffiCall: #( void * qjs_value_dup #( void * context , void * value ) )
+]
+
 { #category : 'primitives - library' }
 QJSLibrary >> hasIntl [
 

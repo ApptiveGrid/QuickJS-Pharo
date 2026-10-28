@@ -106,11 +106,66 @@ QJSBindingTest >> testNameAloneDoesNotExpose [
 ]
 
 { #category : 'tests' }
+QJSBindingTest >> testClosureIsCalledForEachElement [
+	"Pharo iterates and calls the JS closure for each row, the rows follow the exposure table"
+
+	context at: 'grid' put: grid exposing: {
+			(QJSTestGrid -> #( rowsDo: )).
+			(QJSTestRow -> #( name )) }.
+	self
+		assert: (context eval: 'const names = []; grid.rowsDo_(row => names.push(row.name())); names')
+		equals: #( 'a' 'b' )
+]
+
+{ #category : 'tests' }
+QJSBindingTest >> testErrorInAClosureReachesJS [
+
+	context at: 'grid' put: grid exposing: #( rowsDo: ).
+	self
+		assert: (context eval: 'try { grid.rowsDo_(row => { throw new Error("stop") }) } catch (e) { e.message }')
+		equals: 'Error: stop'
+]
+
+{ #category : 'tests' }
+QJSBindingTest >> testFunctionCalledFromOutsideHasADeadline [
+
+	| loop |
+	runtime timeoutMilliseconds: 100.
+	loop := context eval: '() => { while (true) {} }'.
+	self should: [ loop value ] raise: QJSError
+]
+
+{ #category : 'tests' }
+QJSBindingTest >> testFunctionGoesBackAsTheSameFunction [
+
+	context at: 'grid' put: grid exposing: #( echo: ).
+	self assert: (context eval: 'const f = x => x * 2; grid.echo_(f) === f') equals: true
+]
+
+{ #category : 'tests' }
+QJSBindingTest >> testFunctionOfAReleasedRuntimeIsAnError [
+
+	| identity |
+	identity := context eval: 'x => x'.
+	runtime free.
+	self should: [ identity value: 1 ] raise: QJSError
+]
+
+{ #category : 'tests' }
 QJSBindingTest >> testNestedEvaluationFromPharo [
 
 	grid context: context.
 	context at: 'grid' put: grid exposing: #( nested ).
 	self assert: (context eval: 'grid.nested() + 1') equals: 43
+]
+
+{ #category : 'tests' }
+QJSBindingTest >> testPharoCallsAFunctionFromOutside [
+
+	| add |
+	add := context eval: '(a, b) => a + b'.
+	self assert: (add value: 40 value: 2) equals: 42.
+	self assert: ((context eval: '[x => x + 1]') first value: 1) equals: 2
 ]
 
 { #category : 'tests' }

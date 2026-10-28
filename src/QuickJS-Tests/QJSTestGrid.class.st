@@ -91,6 +91,12 @@ QJSTestGrid >> rows [
 	^ rows
 ]
 
+{ #category : 'enumerating' }
+QJSTestGrid >> rowsDo: aBlock [
+
+	rows do: aBlock
+]
+
 { #category : 'accessing' }
 QJSTestGrid >> secret [
 

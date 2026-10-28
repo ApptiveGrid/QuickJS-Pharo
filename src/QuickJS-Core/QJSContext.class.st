@@ -8,6 +8,8 @@ Values cross in both directions the same way: nil and null (undefined becomes ni
 
 The exposure table applies to every object reachable through the binding: an object returned by an exposed method gets the selectors of its class from the table, or none and stays opaque. A selector not exposed does not exist in JS. An error in Pharo becomes a JS Error with its messageText.
 
+A JS function reaching Pharo is a QJSFunction, which Pharo calls like a block; handed back to JS it is the same function again.
+
 #free releases me and may be called again; releasing my runtime releases me too. If you forget it, finalization takes care of it.
 "
 Class {
@@ -80,12 +82,12 @@ QJSContext >> arrayBoxFor: aCollection exposure: aDictionary [
 ]
 
 { #category : 'private - to Pharo' }
-QJSContext >> arrayOf: value [
+QJSContext >> arrayOf: value exposure: aDictionary [
 
 	^ (0 to: (self library context: handle arrayLength: value) - 1) asArray collect: [ :index |
 		  | element |
 		  element := self library context: handle getIndex: index of: value.
-		  [ self valueOf: element ] ensure: [ self freeValue: element ] ]
+		  [ self valueOf: element exposure: aDictionary ] ensure: [ self freeValue: element ] ]
 ]
 
 { #category : 'accessing' }
@@ -134,7 +136,29 @@ QJSContext >> boxFor: anObject exposure: aDictionary [
 	anObject isDictionary ifTrue: [ ^ self objectBoxFor: anObject exposure: aDictionary ].
 	(anObject isCollection and: [ anObject isSequenceable ]) ifTrue: [
 		^ self arrayBoxFor: anObject exposure: aDictionary ].
+	(anObject isKindOf: QJSFunction) ifTrue: [ ^ self functionBoxFor: anObject ].
 	^ self bindingBoxFor: anObject exposure: aDictionary
+]
+
+{ #category : 'evaluating' }
+QJSContext >> call: aFunction withArguments: anArray [
+	"Call a JS function of mine, see QJSFunction"
+
+	| boxes argv value |
+	self checkLive.
+	self class ensureCallback.
+	boxes := OrderedCollection new.
+	argv := ExternalAddress allocate: (anArray size max: 1) * 8.
+	^ [
+	  anArray doWithIndex: [ :each :index |
+		  boxes add: (self boxFor: each exposure: aFunction exposure).
+		  argv pointerAt: index - 1 * 8 + 1 put: boxes last ].
+	  value := self library context: handle call: aFunction handle argc: anArray size argv: argv.
+	  value isNull ifTrue: [ QJSError signal: 'QuickJS function is released' ].
+	  [ self valueOf: value exposure: aFunction exposure ] ensure: [ self freeValue: value ] ]
+		  ensure: [
+			  boxes do: [ :each | self freeValue: each ].
+			  argv free ]
 ]
 
 { #category : 'private' }
@@ -155,16 +179,16 @@ QJSContext >> checkLive [
 ]
 
 { #category : 'private - to Pharo' }
-QJSContext >> dictionaryOf: value [
+QJSContext >> dictionaryOf: value exposure: aDictionary [
 
 	| keys dictionary |
 	dictionary := Dictionary new.
 	keys := self library context: handle objectKeys: value.
 	[
-	(self arrayOf: keys) do: [ :key |
+	(self arrayOf: keys exposure: aDictionary) do: [ :key |
 		| property |
 		property := self library context: handle getProperty: (self cString: key) of: value.
-		[ dictionary at: key put: (self valueOf: property) ] ensure: [ self freeValue: property ] ] ]
+		[ dictionary at: key put: (self valueOf: property exposure: aDictionary) ] ensure: [ self freeValue: property ] ] ]
 		ensure: [ self freeValue: keys ].
 	^ dictionary
 ]
@@ -199,6 +223,25 @@ QJSContext >> exposureFor: anObject from: selectorsOrTable [
 			  each asSymbol ] ]
 ]
 
+{ #category : 'private - to JS' }
+QJSContext >> functionBoxFor: aFunction [
+
+	| box |
+	box := self library context: handle dupValue: aFunction handle.
+	box isNull ifTrue: [ QJSError signal: 'a JS function goes back only into its own runtime' ].
+	^ box
+]
+
+{ #category : 'private - to Pharo' }
+QJSContext >> functionOf: value exposure: aDictionary [
+	"A box of its own: the one handed in is freed by whoever handed it in"
+
+	| box |
+	box := self library context: handle dupValue: value.
+	box isNull ifTrue: [ QJSError signal: 'QuickJS context is released' ].
+	^ QJSFunction context: self handle: box exposure: aDictionary
+]
+
 { #category : 'releasing' }
 QJSContext >> free [
 	"Release the context. Harmless when called again or after the runtime is released"
@@ -223,7 +266,8 @@ QJSContext >> handleCall: id selector: selectorValue argc: argc argv: argv answe
 	  (binding allows: selector) ifFalse: [ QJSError signal: selector , ' is not exposed to JS' ].
 	  selector numArgs = argc ifFalse: [
 		  QJSError signal: selector , ' expects ' , selector numArgs printString , ' arguments, not ' , argc printString ].
-	  arguments := (1 to: argc) collect: [ :index | self valueOf: (argv pointerAt: index - 1 * 8 + 1) ].
+	  arguments := (1 to: argc) collect: [ :index |
+		               self valueOf: (argv pointerAt: index - 1 * 8 + 1) exposure: binding exposure ].
 	  result := binding object perform: selector withArguments: arguments asArray.
 	  answer pointerAt: 1 put: (self boxFor: result exposure: binding exposure).
 	  0 ]
@@ -338,6 +382,13 @@ QJSContext >> stringOf: value [
 { #category : 'private - to Pharo' }
 QJSContext >> valueOf: value [
 
+	^ self valueOf: value exposure: Dictionary new
+]
+
+{ #category : 'private - to Pharo' }
+QJSContext >> valueOf: value exposure: aDictionary [
+	"aDictionary is the exposure a JS function takes along, for what it gets and answers"
+
 	| type |
 	type := self library context: handle valueType: value.
 	type = 12 ifTrue: [ QJSError signal: 'QuickJS context is released' ].
@@ -347,7 +398,8 @@ QJSContext >> valueOf: value [
 	type = 3 ifTrue: [ ^ self numberOf: value ].
 	type = 8 ifTrue: [ ^ (self stringOf: value) asInteger ].
 	type = 13 ifTrue: [ ^ (runtime bindingAt: (self library context: handle bindingId: value)) object ].
-	type = 6 ifTrue: [ ^ self arrayOf: value ].
-	type = 5 ifTrue: [ ^ self dictionaryOf: value ].
+	type = 7 ifTrue: [ ^ self functionOf: value exposure: aDictionary ].
+	type = 6 ifTrue: [ ^ self arrayOf: value exposure: aDictionary ].
+	type = 5 ifTrue: [ ^ self dictionaryOf: value exposure: aDictionary ].
 	^ self stringOf: value
 ]

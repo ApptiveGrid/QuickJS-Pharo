@@ -88,6 +88,16 @@ typedef int (*QJSPharoCallback)(QJSContextBox *context, int64_t id, QJSValueBox 
                                 int argc, QJSValueBox **argv, QJSValueBox **answer);
 void qjs_set_callback(QJSPharoCallback callback);
 
+/* Calls from Pharo into JS functions. A callback only borrows its argument
+   boxes; qjs_value_dup gives Pharo a box of its own, so a JS function can
+   outlive the call that handed it over. qjs_call calls a function with this
+   undefined: from a callback within the deadline of the evaluation around
+   it, from outside one with a deadline of its own. The result may hold an
+   exception. Both answer NULL if the context or a value is released or
+   belongs to another runtime. */
+QJSValueBox *qjs_value_dup(QJSContextBox *context, QJSValueBox *value);
+QJSValueBox *qjs_call(QJSContextBox *context, QJSValueBox *function, int argc, QJSValueBox **argv);
+
 /* building values from Pharo; NULL if the context is released */
 QJSValueBox *qjs_new_undefined(QJSContextBox *context);
 QJSValueBox *qjs_new_null(QJSContextBox *context);

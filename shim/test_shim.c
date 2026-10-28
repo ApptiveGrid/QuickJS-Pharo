@@ -162,9 +162,11 @@ static void test_any_order(void)
     check("100 contexts, some released twice", qjs_live_owners() == 0);
 }
 
-/* A stand-in for Pharo: object 7 answers name, add: and fail, and can
-   evaluate JS from inside a call. */
+/* A stand-in for Pharo: object 7 answers name, add: and fail, can
+   evaluate JS from inside a call, calls a JS function for each of 1, 2
+   and 3 (each:) and keeps a JS function beyond the call (keep:). */
 static int calls = 0;
+static QJSValueBox *kept = NULL;
 
 static int fake_pharo(QJSContextBox *ctx, int64_t id, QJSValueBox *selector,
                       int argc, QJSValueBox **argv, QJSValueBox **answer)
@@ -182,6 +184,16 @@ static int fake_pharo(QJSContextBox *ctx, int64_t id, QJSValueBox *selector,
         *answer = qjs_new_int64(ctx, 40 + qjs_value_to_int64(ctx, argv[0]));
     } else if (strcmp(name, "nested") == 0) {
         *answer = qjs_eval(ctx, "6 * 7", 5);
+    } else if (strcmp(name, "each:") == 0 && argc == 1) {
+        for (int i = 1; i <= 3; i++) {
+            QJSValueBox *element = qjs_new_int64(ctx, i);
+            qjs_value_free(qjs_call(ctx, argv[0], 1, &element));
+            qjs_value_free(element);
+        }
+        *answer = qjs_new_undefined(ctx);
+    } else if (strcmp(name, "keep:") == 0 && argc == 1) {
+        kept = qjs_value_dup(ctx, argv[0]);
+        *answer = qjs_new_undefined(ctx);
     } else {
         *answer = qjs_new_string(ctx, "boom from Pharo", 15);
         status = 1;
@@ -279,11 +291,79 @@ static void test_bindings(void)
     qjs_set_callback(NULL);
 }
 
+static void test_functions(void)
+{
+    QJSOwner *rt = qjs_runtime_new(), *other;
+    QJSContextBox *ctx = qjs_context_new(rt), *other_ctx;
+    QJSValueBox *grid, *v, *e;
+
+    qjs_set_callback(fake_pharo);
+    grid = qjs_new_binding(ctx, 7);
+    qjs_binding_define(ctx, grid, "each_", 7, "each:");
+    qjs_binding_define(ctx, grid, "keep_", 7, "keep:");
+    qjs_set_global(ctx, "grid", grid);
+    qjs_value_free(grid);
+
+    v = eval(ctx, "const seen = []; grid.each_(x => seen.push(x * 10)); seen.join()");
+    check("Pharo calls a JS closure for each element", string_equals(ctx, v, "10,20,30"));
+    qjs_value_free(v);
+
+    v = eval(ctx, "x => x");
+    check("a function has the function type", qjs_value_type(ctx, v) == QJS_TYPE_FUNCTION);
+    qjs_value_free(v);
+
+    qjs_value_free(eval(ctx, "grid.keep_((a, b) => a + b)"));
+    check("Pharo keeps a function beyond the call", qjs_value_type(ctx, kept) == QJS_TYPE_FUNCTION);
+    {
+        QJSValueBox *args[2] = { qjs_new_int64(ctx, 40), qjs_new_int64(ctx, 2) };
+        v = qjs_call(ctx, kept, 2, args);
+        check("and calls it from outside an evaluation", qjs_value_to_int64(ctx, v) == 42);
+        qjs_value_free(v);
+        qjs_value_free(args[0]);
+        qjs_value_free(args[1]);
+    }
+    qjs_value_free(kept);
+
+    qjs_value_free(eval(ctx, "grid.keep_(() => { throw new Error('no') })"));
+    v = qjs_call(ctx, kept, 0, NULL);
+    check("a throwing function answers an exception", qjs_value_type(ctx, v) == QJS_TYPE_EXCEPTION);
+    qjs_value_free(v);
+    e = qjs_exception(ctx);
+    check("with its message", string_equals(ctx, e, "Error: no"));
+    qjs_value_free(e);
+    qjs_value_free(kept);
+
+    qjs_runtime_set_timeout_ms(rt, 200);
+    qjs_value_free(eval(ctx, "grid.keep_(() => { while (true) {} })"));
+    v = qjs_call(ctx, kept, 0, NULL);
+    check("a call from outside has a deadline of its own", qjs_value_type(ctx, v) == QJS_TYPE_EXCEPTION);
+    qjs_value_free(v);
+    qjs_value_free(qjs_exception(ctx));
+    qjs_runtime_set_timeout_ms(rt, 0);
+
+    other = qjs_runtime_new();
+    other_ctx = qjs_context_new(other);
+    check("a function stays in its runtime",
+          qjs_value_dup(other_ctx, kept) == NULL && qjs_call(other_ctx, kept, 0, NULL) == NULL);
+    qjs_context_destroy(other_ctx);
+    qjs_runtime_destroy(other);
+
+    qjs_runtime_release(rt);
+    check("a kept function is released with its runtime", qjs_call(ctx, kept, 0, NULL) == NULL);
+    qjs_value_free(kept);
+    kept = NULL;
+    qjs_context_destroy(ctx);
+    qjs_runtime_destroy(rt);
+    check("functions leave nothing behind", qjs_live_owners() == 0);
+    qjs_set_callback(NULL);
+}
+
 int main(void)
 {
     test_values();
     test_any_order();
     test_bindings();
+    test_functions();
     printf("%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
     return failures ? 1 : 0;
 }
