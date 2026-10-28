@@ -44,6 +44,20 @@ The table applies to everything reachable through the binding. An object gets th
 
 A call from JS into Pharo costs some 13 µs. The runtime keeps the objects handed to JS until JS lets go of them; it forgets them after the next evaluation.
 
+## JS functions in Pharo
+
+A JS function that reaches Pharo, as the argument of an exposed method or as the result of an evaluation, is a `QJSFunction`. It understands `value`, `value:`, `value:value:`, `cull:` and `valueWithArguments:` like a block, so a Pharo method that takes a block takes a JS closure too:
+
+```smalltalk
+"AGGrid >> rowsDo: aBlock   rows do: aBlock"
+context at: 'grid' put: aGrid exposing: {
+	AGGrid -> #(rowsDo:).
+	AGRow -> #(name) }.
+context eval: 'const names = []; grid.rowsDo_(row => names.push(row.name())); names'
+```
+
+Pharo iterates and calls the closure for each row. The arguments cross into JS like any value, with the exposure table of the binding the function came through. Called from a call from JS, the function runs within the deadline of the evaluation around it; called from outside, `(context eval: '(a, b) => a + b') value: 40 value: 2`, it gets a deadline of its own. An error in the function reaches Pharo as a `QJSError`, and from there JS again as an `Error`. Handed back to JS it is the same function again. Pharo keeps it alive in JS until the `QJSFunction` is garbage or the runtime is released.
+
 ## Lifetime
 
 You can also hold a runtime and contexts yourself. `free` releases them at once and may be called any number of times, in any order; releasing a runtime releases its contexts too. Without `free`, finalization releases them when they become garbage. After an image restart they are stale and signal `QJSError` instead of reaching into freed memory.

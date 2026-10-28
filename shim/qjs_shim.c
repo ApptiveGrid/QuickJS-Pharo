@@ -14,7 +14,7 @@ struct QJSOwner {
     int64_t timeout_ms;
     int64_t deadline_ms;
     int64_t refs;       /* the runtime box itself plus every context and value box */
-    int depth;          /* nesting of qjs_eval, > 1 when Pharo evaluates from a callback */
+    int depth;          /* nesting of qjs_eval and qjs_call, > 1 when Pharo runs JS from a callback */
     QJSLink contexts;
     QJSLink values;
     int64_t *released;  /* ids of bindings JS has let go of, drained by Pharo */
@@ -83,6 +83,24 @@ static int interrupt_handler(void *runtime_or_context, void *opaque)
 {
     QJSOwner *owner = opaque;
     return owner->deadline_ms > 0 && now_ms() > owner->deadline_ms;
+}
+
+/* Around every evaluation and every call of a JS function from Pharo. Only
+   the outermost one sets the stack top (the calling thread may differ
+   between calls) and the deadline; one from a Pharo callback runs deeper on
+   the same stack and within the same deadline. */
+static void enter_js(QJSOwner *owner)
+{
+    if (owner->depth++ == 0) {
+        JS_UpdateStackTop(owner->rt);
+        owner->deadline_ms = owner->timeout_ms > 0 ? now_ms() + owner->timeout_ms : 0;
+    }
+}
+
+static void leave_js(QJSOwner *owner)
+{
+    if (--owner->depth == 0)
+        owner->deadline_ms = 0;
 }
 
 static void owner_unref(QJSOwner *owner)
@@ -306,17 +324,9 @@ QJSValueBox *qjs_eval(QJSContextBox *context, const char *source, size_t length)
     memcpy(copy, source, length);
     copy[length] = '\0';
 
-    /* Only the outermost evaluation sets the stack top (the calling thread
-       may differ between calls) and the deadline; an evaluation from a
-       Pharo callback runs deeper on the same stack and within the same
-       deadline. */
-    if (owner->depth++ == 0) {
-        JS_UpdateStackTop(owner->rt);
-        owner->deadline_ms = owner->timeout_ms > 0 ? now_ms() + owner->timeout_ms : 0;
-    }
+    enter_js(owner);
     result = JS_Eval(context->ctx, copy, length, "<pharo>", JS_EVAL_TYPE_GLOBAL);
-    if (--owner->depth == 0)
-        owner->deadline_ms = 0;
+    leave_js(owner);
 
     free(copy);
     return box_value(context, result);
@@ -510,6 +520,45 @@ static JSValue call_pharo(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     }
     JS_FreeValue(ctx, result);
     return JS_ThrowInternalError(ctx, "Pharo callback failed");
+}
+
+/* ---- calls from Pharo into JS functions ---- */
+
+QJSValueBox *qjs_value_dup(QJSContextBox *context, QJSValueBox *value)
+{
+    if (!context_live(context) || !value_live(value) || value->owner != context->owner)
+        return NULL;
+    return box_value(context, JS_DupValue(context->ctx, value->value));
+}
+
+QJSValueBox *qjs_call(QJSContextBox *context, QJSValueBox *function, int argc, QJSValueBox **argv)
+{
+    QJSOwner *owner;
+    JSValue *args = NULL;
+    JSValue result;
+
+    if (!context_live(context) || !value_live(function) || function->owner != context->owner)
+        return NULL;
+    owner = context->owner;
+    if (argc > 0) {
+        args = malloc(argc * sizeof(JSValue));
+        if (!args)
+            return box_value(context, JS_ThrowOutOfMemory(context->ctx));
+        for (int i = 0; i < argc; i++) {
+            if (!value_live(argv[i]) || argv[i]->owner != owner) {
+                free(args);
+                return NULL;
+            }
+            args[i] = argv[i]->value;
+        }
+    }
+
+    enter_js(owner);
+    result = JS_Call(context->ctx, function->value, JS_UNDEFINED, argc, args);
+    leave_js(owner);
+
+    free(args);
+    return box_value(context, result);
 }
 
 /* ---- building values from Pharo ---- */
