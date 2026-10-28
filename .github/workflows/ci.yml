@@ -22,7 +22,11 @@ jobs:
   linux:
     name: Debian 12, ${{ matrix.variant }}, Pharo ${{ matrix.pharo }}
     runs-on: ubuntu-latest
-    container: debian:12
+    # setarch -R in the ASan step needs the personality call that Docker's
+    # default seccomp profile refuses
+    container:
+      image: debian:12
+      options: --security-opt seccomp=unconfined
     strategy:
       fail-fast: false
       matrix:
@@ -61,12 +65,18 @@ jobs:
           make -C shim VARIANT=${{ matrix.variant }} QUICKJS_PREFIX=$PWD/../quickjs-install test 2>&1 | tee c-tests.log
           echo "::notice title=C tests (${{ matrix.variant }})::$(grep -E 'PASSED|FAILED' c-tests.log | tail -n 1)"
 
+      # The libasan of gcc 12 can loop in AddressSanitizer:DEADLYSIGNAL when the
+      # host kernel randomizes mmap with many bits (vm.mmap_rnd_bits); on main
+      # in October 2026 it did, until the runner was lost after an hour. Without
+      # address space randomization, which setarch hands on from make to the
+      # test, the layout is fixed; the time limit ends any other hang early.
       - name: C tests under AddressSanitizer
+        timeout-minutes: 5
         env:
           ASAN_OPTIONS: detect_leaks=1
         run: |
           set -o pipefail
-          make -C shim VARIANT=${{ matrix.variant }} QUICKJS_PREFIX=$PWD/../quickjs-install asan 2>&1 | tee asan.log
+          setarch "$(uname -m)" -R make -C shim VARIANT=${{ matrix.variant }} QUICKJS_PREFIX=$PWD/../quickjs-install asan 2>&1 | tee asan.log
           echo "::notice title=C tests under ASan (${{ matrix.variant }})::$(grep -E 'PASSED|FAILED' asan.log | tail -n 1)"
 
       - name: Download Pharo ${{ matrix.pharo }} and the Linux VM
