@@ -1,6 +1,8 @@
 "
 I am a QuickJS runtime: one heap with its limits. A runtime belongs to one thread; calls go through the same-thread runner, so a running script holds the VM until it ends or its timeout strikes. The timeout also covers reading the result into Pharo, which runs JS too (getters, toString, Proxy traps).
 
+The stack is limited as well: QuickJS ends a recursion with an error once it runs 1 MB of C stack below where the outermost evaluation or call entered. That is its default, which the shim keeps. A recursion through Pharo (a closure calling the method that calls it) runs on the same stack, so the frames of Pharo count too. The thread of the VM needs more stack than that: its main thread has 8 MB on Linux and macOS, a worker thread (--worker) four times the default thread stack, 2 MB on macOS.
+
 Usually you do not hold me yourself: `QJSRuntime evaluate: '6 * 7'` or `QJSRuntime during: [ :context | ... ]` give a fresh runtime and context and release both afterwards. A runtime costs next to nothing; the context is what takes time to build (some 40-70 µs).
 
 If you hold me, #free releases me with all my contexts and values, and may be called again. If you forget it, finalization releases me when I am garbage, in whatever order my contexts go. After an image restart I am stale and signal QJSError instead of reaching into freed memory.

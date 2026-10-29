@@ -56,7 +56,7 @@ context at: 'grid' put: aGrid exposing: {
 context eval: 'const names = []; grid.rowsDo_(row => names.push(row.name())); names'
 ```
 
-Pharo iterates and calls the closure for each row. The arguments cross into JS like any value, with the exposure table of the binding the function came through. Called from a call from JS, the function runs within the deadline of the evaluation around it; called from outside, `(context eval: '(a, b) => a + b') value: 40 value: 2`, it gets a deadline of its own. An error in the function reaches Pharo as a `QJSError`, and from there JS again as an `Error`. Handed back to JS it is the same function again. Pharo keeps it alive in JS until the `QJSFunction` is garbage or the runtime is released.
+Pharo iterates and calls the closure for each row. The arguments cross into JS like any value, with the exposure table of the binding the function came through. Called from a call from JS, the function runs within the deadline of the evaluation around it; called from outside, `(context eval: '(a, b) => a + b') value: 40 value: 2`, it gets a deadline of its own. An error in the function reaches Pharo as a `QJSError`, and from there JS again as an `Error`. A closure that calls the method calling it recurses through Pharo on the one C stack; the stack limit of QuickJS, 1 MB from where the outermost evaluation entered, counts the frames of Pharo in between and ends the recursion with an error. Handed back to JS it is the same function again. Pharo keeps it alive in JS until the `QJSFunction` is garbage or the runtime is released.
 
 ## Lifetime
 
