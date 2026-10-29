@@ -218,6 +218,12 @@ QJSLibrary >> context: context define: binding name: name id: id selector: selec
 	^ self ffiCall: #( int qjs_binding_define #( void * context , void * binding , String name , int64 id , String selector ) )
 ]
 
+{ #category : 'primitives - bindings' }
+QJSLibrary >> context: context defineGetter: binding name: name id: id selector: selector [
+
+	^ self ffiCall: #( int qjs_binding_define_getter #( void * context , void * binding , String name , int64 id , String selector ) )
+]
+
 { #category : 'primitives - structure' }
 QJSLibrary >> context: context getIndex: index of: array [
 

@@ -632,20 +632,51 @@ QJSValueBox *qjs_new_binding(QJSContextBox *context, int64_t id)
     return box_value(context, object);
 }
 
-/* Adds the method name to a binding, calling selector on the Pharo object id */
-int qjs_binding_define(QJSContextBox *context, QJSValueBox *binding, const char *name, int64_t id, const char *selector)
+/* The C function that calls selector on the Pharo object id */
+static JSValue pharo_function(JSContext *ctx, int64_t id, const char *selector)
 {
     JSValue data[2];
     JSValue function;
+    data[0] = JS_NewInt64(ctx, id);
+    data[1] = JS_NewString(ctx, selector);
+    function = JS_NewCFunctionData(ctx, call_pharo, 0, 0, 2, data);
+    JS_FreeValue(ctx, data[1]);
+    return function;
+}
+
+/* Adds the method name to a binding, calling selector on the Pharo object id */
+int qjs_binding_define(QJSContextBox *context, QJSValueBox *binding, const char *name, int64_t id, const char *selector)
+{
+    JSValue function;
     if (!context_live(context) || !value_live(binding))
         return -1;
-    data[0] = JS_NewInt64(context->ctx, id);
-    data[1] = JS_NewString(context->ctx, selector);
-    function = JS_NewCFunctionData(context->ctx, call_pharo, 0, 0, 2, data);
-    JS_FreeValue(context->ctx, data[1]);
+    function = pharo_function(context->ctx, id, selector);
     if (JS_IsException(function))
         return -1;
     return JS_DefinePropertyValueStr(context->ctx, binding->value, name, function, JS_PROP_CONFIGURABLE);
+}
+
+/* Adds name to a binding as a read-only property whose getter calls
+   selector on the Pharo object id. Like a method it is not enumerable, so
+   walking the object (Object.keys, JSON.stringify) calls nothing in Pharo. */
+int qjs_binding_define_getter(QJSContextBox *context, QJSValueBox *binding, const char *name, int64_t id, const char *selector)
+{
+    JSValue getter;
+    JSAtom atom;
+    int status;
+    if (!context_live(context) || !value_live(binding))
+        return -1;
+    getter = pharo_function(context->ctx, id, selector);
+    if (JS_IsException(getter))
+        return -1;
+    atom = JS_NewAtom(context->ctx, name);
+    if (atom == JS_ATOM_NULL) {
+        JS_FreeValue(context->ctx, getter);
+        return -1;
+    }
+    status = JS_DefinePropertyGetSet(context->ctx, binding->value, atom, getter, JS_UNDEFINED, JS_PROP_CONFIGURABLE);
+    JS_FreeAtom(context->ctx, atom);
+    return status;
 }
 
 int64_t qjs_binding_id(QJSContextBox *context, QJSValueBox *value)

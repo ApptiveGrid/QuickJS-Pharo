@@ -115,10 +115,13 @@ QJSValueBox *qjs_new_array(QJSContextBox *context);
 QJSValueBox *qjs_new_object(QJSContextBox *context);
 
 /* Bindings: a JS object standing for the Pharo object Pharo keeps under
-   id, with one method per exposed selector. When JS lets go of it, its id
-   shows up in qjs_released_bindings, to be drained after an evaluation. */
+   id, with one method or read-only property per exposed selector. Reading
+   a property defined by qjs_binding_define_getter calls the selector, like
+   calling a method does. When JS lets go of a binding, its id shows up in
+   qjs_released_bindings, to be drained after an evaluation. */
 QJSValueBox *qjs_new_binding(QJSContextBox *context, int64_t id);
 int qjs_binding_define(QJSContextBox *context, QJSValueBox *binding, const char *name, int64_t id, const char *selector);
+int qjs_binding_define_getter(QJSContextBox *context, QJSValueBox *binding, const char *name, int64_t id, const char *selector);
 int64_t qjs_binding_id(QJSContextBox *context, QJSValueBox *value);
 int qjs_released_bindings(QJSOwner *owner, int64_t *ids, int capacity);
 
