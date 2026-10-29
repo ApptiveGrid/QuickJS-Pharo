@@ -20,10 +20,10 @@ QJSRuntime during: [ :context |
 ```smalltalk
 QJSRuntime during: [ :context |
 	context at: 'grid' put: aGrid exposing: #(name rowAt:).
-	context eval: 'grid.name() + " has " + grid.rowAt_(1)' ]
+	context eval: 'grid.name + " has " + grid.rowAt_(1)' ]
 ```
 
-Only the selectors you list exist in JS. Their names in JS are a separate matter: a method can name itself with a pragma,
+Only the selectors you list exist in JS. A selector without arguments becomes a read-only property, read without parentheses (`grid.name`); every other selector becomes a method (`grid.rowAt_(1)`). Their names in JS are a separate matter: a method can name itself with a pragma,
 
 ```smalltalk
 at: key put: value
@@ -37,7 +37,7 @@ so JS calls `grid.atPut(key, value)`. Without a pragma the name is PharoJS-style
 context at: 'grid' put: aGrid exposing: {
 	AGGrid -> #(name rows).
 	AGRow -> #(id name) }.
-context eval: 'grid.rows().map(r => r.name())'
+context eval: 'grid.rows.map(r => r.name)'
 ```
 
 The table applies to everything reachable through the binding. An object gets the selectors of the nearest class in its hierarchy that has an entry. Without an entry it reaches JS opaque: JS can hold it and pass it back, but call nothing on it. Values cross as values in both directions: `nil`, Booleans, numbers, strings, sequenceable collections and dictionaries. A binding that comes back from JS is the Pharo object itself. An error in Pharo becomes a JS `Error` that JS can catch. `context at: 'n' put: 42` sets a plain value.
@@ -53,7 +53,7 @@ A JS function that reaches Pharo, as the argument of an exposed method or as the
 context at: 'grid' put: aGrid exposing: {
 	AGGrid -> #(rowsDo:).
 	AGRow -> #(name) }.
-context eval: 'const names = []; grid.rowsDo_(row => names.push(row.name())); names'
+context eval: 'const names = []; grid.rowsDo_(row => names.push(row.name)); names'
 ```
 
 Pharo iterates and calls the closure for each row. The arguments cross into JS like any value, with the exposure table of the binding the function came through. Called from a call from JS, the function runs within the deadline of the evaluation around it; called from outside, `(context eval: '(a, b) => a + b') value: 40 value: 2`, it gets a deadline of its own. An error in the function reaches Pharo as a `QJSError`, and from there JS again as an `Error`. A closure that calls the method calling it recurses through Pharo on the one C stack; the stack limit of QuickJS, 1 MB from where the outermost evaluation entered, counts the frames of Pharo in between and ends the recursion with an error. Handed back to JS it is the same function again. Pharo keeps it alive in JS until the `QJSFunction` is garbage or the runtime is released.

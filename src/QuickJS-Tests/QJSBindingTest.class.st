@@ -55,16 +55,16 @@ QJSBindingTest >> testBindingComesBackAsTheSameObject [
 { #category : 'tests' }
 QJSBindingTest >> testExposedSelectorIsCallable [
 
-	context at: 'grid' put: grid exposing: #( name ).
-	self assert: (context eval: 'grid.name()') equals: 'Kunden'
+	context at: 'grid' put: grid exposing: #( echo: ).
+	self assert: (context eval: 'grid.echo_(42)') equals: 42
 ]
 
 { #category : 'tests' }
 QJSBindingTest >> testFollowUpObjectWithoutEntryIsOpaque [
 
 	context at: 'grid' put: grid exposing: #( rows indexOf: ).
-	self assert: (context eval: 'typeof grid.rows()[0].name') equals: 'undefined'.
-	self assert: (context eval: 'grid.indexOf_(grid.rows()[1])') equals: 2
+	self assert: (context eval: 'typeof grid.rows[0].name') equals: 'undefined'.
+	self assert: (context eval: 'grid.indexOf_(grid.rows[1])') equals: 2
 ]
 
 { #category : 'tests' }
@@ -73,8 +73,8 @@ QJSBindingTest >> testFollowUpObjectsUseTheTable [
 	context at: 'grid' put: grid exposing: {
 			(QJSTestGrid -> #( rows rowAt: )).
 			(QJSTestRow -> #( name )) }.
-	self assert: (context eval: 'grid.rows().map(r => r.name())') equals: #( 'a' 'b' ).
-	self assert: (context eval: 'grid.rowAt_(2).name()') equals: 'b'
+	self assert: (context eval: 'grid.rows.map(r => r.name)') equals: #( 'a' 'b' ).
+	self assert: (context eval: 'grid.rowAt_(2).name') equals: 'b'
 ]
 
 { #category : 'tests' }
@@ -113,7 +113,7 @@ QJSBindingTest >> testClosureIsCalledForEachElement [
 			(QJSTestGrid -> #( rowsDo: )).
 			(QJSTestRow -> #( name )) }.
 	self
-		assert: (context eval: 'const names = []; grid.rowsDo_(row => names.push(row.name())); names')
+		assert: (context eval: 'const names = []; grid.rowsDo_(row => names.push(row.name)); names')
 		equals: #( 'a' 'b' )
 ]
 
@@ -156,7 +156,7 @@ QJSBindingTest >> testNestedEvaluationFromPharo [
 
 	grid context: context.
 	context at: 'grid' put: grid exposing: #( nested ).
-	self assert: (context eval: 'grid.nested() + 1') equals: 43
+	self assert: (context eval: 'grid.nested + 1') equals: 43
 ]
 
 { #category : 'tests' }
@@ -181,9 +181,9 @@ QJSBindingTest >> testPragmaNamesTheMethod [
 QJSBindingTest >> testPharoErrorBecomesJSError [
 
 	context at: 'grid' put: grid exposing: #( fail ).
-	self assert: (context eval: 'try { grid.fail() } catch (e) { e.message }') equals: 'nope'.
+	self assert: (context eval: 'try { grid.fail } catch (e) { e.message }') equals: 'nope'.
 	self
-		should: [ context eval: 'grid.fail()' ]
+		should: [ context eval: 'grid.fail' ]
 		raise: QJSError
 		withExceptionDo: [ :error | self assert: (error messageText includesSubstring: 'nope') ]
 ]
@@ -226,6 +226,17 @@ QJSBindingTest >> testUnexposedSelectorDoesNotExist [
 	context at: 'grid' put: grid exposing: #( name ).
 	self assert: (context eval: 'typeof grid.secret') equals: 'undefined'.
 	self should: [ context eval: 'grid.secret()' ] raise: QJSError
+]
+
+{ #category : 'tests' }
+QJSBindingTest >> testUnarySelectorIsAReadOnlyProperty [
+	"Read without parentheses; not enumerable, so walking the object calls nothing in Pharo"
+
+	context at: 'grid' put: grid exposing: #( name ).
+	self assert: (context eval: 'grid.name') equals: 'Kunden'.
+	self assert: (context eval: 'typeof Object.getOwnPropertyDescriptor(grid, "name").get') equals: 'function'.
+	self assert: (context eval: 'grid.name = "other"; grid.name') equals: 'Kunden'.
+	self assert: (context eval: 'JSON.stringify(grid)') equals: '{}'
 ]
 
 { #category : 'tests' }

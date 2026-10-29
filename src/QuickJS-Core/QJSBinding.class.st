@@ -4,6 +4,8 @@ I am what a runtime keeps for a Pharo object it has handed to JS: the object, th
 The exposure table maps classes to selectors. An object gets the selectors of the nearest class in its hierarchy that has an entry; without an entry it gets none and stays opaque to JS. That is the permission.
 
 The name is separate from the permission: a method names itself with a pragma, e.g. `at: key put: value <jsName: 'atPut'>`; without one, the name is PharoJS-style (#at:put: becomes at_put_). Two exposed selectors with the same name signal a QJSError.
+
+A selector without arguments is a read-only property in JS, read without parentheses (`grid.name`); its getter calls the selector on every read. Every other selector is a method. A property is not enumerable, like a method, so walking the object (Object.keys, JSON.stringify) calls nothing in Pharo.
 "
 Class {
 	#name : 'QJSBinding',
@@ -41,6 +43,13 @@ QJSBinding >> allows: aSelector [
 QJSBinding >> exposure [
 
 	^ exposure
+]
+
+{ #category : 'testing' }
+QJSBinding >> isProperty: aSelector [
+	"A selector without arguments is read as a property in JS, without parentheses"
+
+	^ aSelector numArgs = 0
 ]
 
 { #category : 'naming' }

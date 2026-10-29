@@ -230,6 +230,7 @@ static void test_bindings(void)
     qjs_binding_define(ctx, grid, "add_", 7, "add:");
     qjs_binding_define(ctx, grid, "nested", 7, "nested");
     qjs_binding_define(ctx, grid, "fail", 7, "fail");
+    qjs_binding_define_getter(ctx, grid, "title", 7, "name");
     qjs_set_global(ctx, "grid", grid);
     check("binding has its id", qjs_binding_id(ctx, grid) == 7);
     check("binding has the binding type", qjs_value_type(ctx, grid) == QJS_TYPE_BINDING);
@@ -256,6 +257,19 @@ static void test_bindings(void)
 
     v = eval(ctx, "typeof grid.size");
     check("an unexposed selector does not exist", string_equals(ctx, v, "undefined"));
+    qjs_value_free(v);
+
+    v = eval(ctx, "grid.title + ' ' + typeof Object.getOwnPropertyDescriptor(grid, 'title').get");
+    check("a property reads from Pharo through its getter", string_equals(ctx, v, "Grid function"));
+    qjs_value_free(v);
+
+    v = eval(ctx, "grid.title = 'other'; grid.title");
+    check("a property cannot be set", string_equals(ctx, v, "Grid"));
+    qjs_value_free(v);
+
+    calls = 0;
+    v = eval(ctx, "JSON.stringify(grid) + Object.keys(grid).length");
+    check("walking a binding calls nothing in Pharo", string_equals(ctx, v, "{}0") && calls == 0);
     qjs_value_free(v);
 
     check("nothing released while JS holds it", qjs_released_bindings(rt, ids, 8) == 0);
