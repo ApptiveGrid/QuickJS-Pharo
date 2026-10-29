@@ -1,5 +1,5 @@
 "
-I check what a script can reach: the language and nothing of the host. None of the modules of quickjs-libc (std, os, bjson) and none of its helpers (print, console, scriptArgs), no way to load a module, no blocking, no recursion beyond the stack limit.
+I check what a script can reach: the language and nothing of the host. None of the modules of quickjs-libc (std, os, bjson) and none of its helpers (print, console, scriptArgs), no way to load a module, no blocking, no recursion beyond the stack limit, also not through Pharo.
 
 The globals are checked against a fixed list, the union of what quickjs-ng and Bellard's QuickJS bring. A QuickJS that adds a global fails here, so it is looked at before its pin moves.
 "
@@ -95,6 +95,18 @@ QJSSandboxTest >> testNoHostModulesOrHelpers [
 	defined := #( 'std' 'os' 'bjson' 'print' 'console' 'scriptArgs' '__loadScript' 'require' 'process' 'setTimeout'
 	              'fetch' 'WebAssembly' ) reject: [ :each | (context eval: 'typeof ' , each) = 'undefined' ].
 	self assert: defined equals: #(  )
+]
+
+{ #category : 'tests' }
+QJSSandboxTest >> testRecursionThroughPharoEndsWithAnError [
+	"Each level runs JS, Pharo and JS again on the one C stack. QuickJS measures its limit from where the outermost evaluation entered, so the frames of Pharo in between count too. The message is not checked: at the deepest level even the toString of the error can hit the limit, and Bellard's QuickJS then loses the cause"
+
+	context at: 'grid' put: (QJSTestGrid named: 'Kunden' rows: #( 'a' )) exposing: #( rowsDo: ).
+	self
+		should: [ context eval: 'var depth = 0; function f() { depth++; grid.rowsDo_(row => f()) } f()' ]
+		raise: QJSError.
+	self assert: (context eval: 'depth') > 1.
+	self assert: (context eval: '1 + 1') equals: 2
 ]
 
 { #category : 'tests' }

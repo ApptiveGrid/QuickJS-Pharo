@@ -164,7 +164,8 @@ static void test_any_order(void)
 
 /* A stand-in for Pharo: object 7 answers name, add: and fail, can
    evaluate JS from inside a call, calls a JS function for each of 1, 2
-   and 3 (each:) and keeps a JS function beyond the call (keep:). */
+   and 3 (each:), calls one once and fails with its exception the way
+   Pharo does (again:), and keeps a JS function beyond the call (keep:). */
 static int calls = 0;
 static QJSValueBox *kept = NULL;
 
@@ -191,6 +192,20 @@ static int fake_pharo(QJSContextBox *ctx, int64_t id, QJSValueBox *selector,
             qjs_value_free(element);
         }
         *answer = qjs_new_undefined(ctx);
+    } else if (strcmp(name, "again:") == 0 && argc == 1) {
+        QJSValueBox *result = qjs_call(ctx, argv[0], 0, NULL);
+        if (qjs_value_type(ctx, result) == QJS_TYPE_EXCEPTION) {
+            QJSValueBox *e = qjs_exception(ctx);
+            size_t message_length = 0;
+            char *message = qjs_value_to_utf8(ctx, e, &message_length);
+            *answer = message ? qjs_new_string(ctx, message, message_length) : qjs_new_string(ctx, "QJSError", 8);
+            qjs_bytes_free(message);
+            qjs_value_free(e);
+            status = 1;
+        } else {
+            *answer = qjs_new_undefined(ctx);
+        }
+        qjs_value_free(result);
     } else if (strcmp(name, "keep:") == 0 && argc == 1) {
         kept = qjs_value_dup(ctx, argv[0]);
         *answer = qjs_new_undefined(ctx);
@@ -358,6 +373,39 @@ static void test_functions(void)
     qjs_set_callback(NULL);
 }
 
+/* A closure that calls the method calling it: each level runs JS, Pharo and
+   JS again on the one C stack. The stack top stays where the outermost
+   evaluation entered, so the stack limit of QuickJS counts the frames in
+   between and ends the recursion with an exception. */
+static void test_recursion_through_pharo(void)
+{
+    QJSOwner *rt = qjs_runtime_new();
+    QJSContextBox *ctx = qjs_context_new(rt);
+    QJSValueBox *grid, *v;
+
+    qjs_set_callback(fake_pharo);
+    grid = qjs_new_binding(ctx, 7);
+    qjs_binding_define(ctx, grid, "again_", 7, "again:");
+    qjs_set_global(ctx, "grid", grid);
+    qjs_value_free(grid);
+
+    v = eval(ctx, "var depth = 0; function f() { depth++; grid.again_(() => f()) } f()");
+    check("recursion through Pharo ends with an exception", qjs_value_type(ctx, v) == QJS_TYPE_EXCEPTION);
+    qjs_value_free(v);
+    qjs_value_free(qjs_exception(ctx));
+    v = eval(ctx, "depth");
+    check("after many levels", qjs_value_to_int64(ctx, v) > 10);
+    qjs_value_free(v);
+    v = eval(ctx, "1 + 1");
+    check("and the context works afterwards", qjs_value_to_int64(ctx, v) == 2);
+    qjs_value_free(v);
+
+    qjs_context_destroy(ctx);
+    qjs_runtime_destroy(rt);
+    check("the recursion leaves nothing behind", qjs_live_owners() == 0);
+    qjs_set_callback(NULL);
+}
+
 /* Reading a result runs JS too (getters, toString, Proxy traps); it stays
    within the deadline of the evaluation that made the result. Without that
    a failing check here hangs instead of failing. */
@@ -427,6 +475,7 @@ int main(void)
     test_any_order();
     test_bindings();
     test_functions();
+    test_recursion_through_pharo();
     test_reading_results();
     printf("%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
     return failures ? 1 : 0;
