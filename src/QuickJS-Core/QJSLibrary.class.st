@@ -153,6 +153,12 @@ QJSLibrary >> runtime: owner timeoutMilliseconds: milliseconds [
 ]
 
 { #category : 'primitives - runtimes' }
+QJSLibrary >> runtimeDeadlinePassed: owner [
+
+	^ self ffiCall: #( int qjs_runtime_deadline_passed #( void * owner ) )
+]
+
+{ #category : 'primitives - runtimes' }
 QJSLibrary >> runtimeDestroy: owner [
 
 	^ self ffiCall: #( void qjs_runtime_destroy #( void * owner ) )

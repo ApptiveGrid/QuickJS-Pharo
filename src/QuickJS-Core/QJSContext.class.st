@@ -8,6 +8,8 @@ Values cross in both directions the same way: nil and null (undefined becomes ni
 
 The exposure table applies to every object reachable through the binding: an object returned by an exposed method gets the selectors of its class from the table, or none and stays opaque. A selector not exposed does not exist in JS. An error in Pharo becomes a JS Error with its messageText.
 
+Reading a JS value into Pharo runs within the deadline of my runtime, since getters, toString and Proxy traps run JS, and it stops at maxDepth levels of nesting, which also ends a cycle.
+
 A JS function reaching Pharo is a QJSFunction, which Pharo calls like a block; handed back to JS it is the same function again.
 
 #free releases me and may be called again; releasing my runtime releases me too. If you forget it, finalization takes care of it.
@@ -18,7 +20,8 @@ Class {
 	#instVars : [
 		'runtime',
 		'handle',
-		'session'
+		'session',
+		'depth'
 	],
 	#classVars : [
 		'Callback',
@@ -56,6 +59,13 @@ QJSContext class >> handleCall: contextHandle id: id selector: selector argc: ar
 	^ context handleCall: id selector: selector argc: argc argv: argv answer: answer
 ]
 
+{ #category : 'accessing' }
+QJSContext class >> maxDepth [
+	"How deep a JS value may nest when it is read into Pharo. A cycle reaches it, real data stays far below"
+
+	^ 1000
+]
+
 { #category : 'callbacks' }
 QJSContext class >> registry [
 	"Contexts by the address of their C box, so the callback finds the one it is called for"
@@ -84,10 +94,15 @@ QJSContext >> arrayBoxFor: aCollection exposure: aDictionary [
 { #category : 'private - to Pharo' }
 QJSContext >> arrayOf: value exposure: aDictionary [
 
-	^ (0 to: (self library context: handle arrayLength: value) - 1) asArray collect: [ :index |
-		  | element |
-		  element := self library context: handle getIndex: index of: value.
-		  [ self valueOf: element exposure: aDictionary ] ensure: [ self freeValue: element ] ]
+	^ self nested: [
+		  | length |
+		  length := self library context: handle arrayLength: value.
+		  length < 0 ifTrue: [ ^ self signalPendingException ].
+		  (0 to: length - 1) asArray collect: [ :index |
+			  | element |
+			  runtime checkDeadline.
+			  element := self library context: handle getIndex: index of: value.
+			  [ self valueOf: element exposure: aDictionary ] ensure: [ self freeValue: element ] ] ]
 ]
 
 { #category : 'accessing' }
@@ -181,16 +196,18 @@ QJSContext >> checkLive [
 { #category : 'private - to Pharo' }
 QJSContext >> dictionaryOf: value exposure: aDictionary [
 
-	| keys dictionary |
-	dictionary := Dictionary new.
-	keys := self library context: handle objectKeys: value.
-	[
-	(self arrayOf: keys exposure: aDictionary) do: [ :key |
-		| property |
-		property := self library context: handle getProperty: (self cString: key) of: value.
-		[ dictionary at: key put: (self valueOf: property exposure: aDictionary) ] ensure: [ self freeValue: property ] ] ]
-		ensure: [ self freeValue: keys ].
-	^ dictionary
+	^ self nested: [
+		  | keys dictionary |
+		  dictionary := Dictionary new.
+		  keys := self library context: handle objectKeys: value.
+		  [
+		  (self valueOf: keys exposure: aDictionary) do: [ :key |
+			  | property |
+			  runtime checkDeadline.
+			  property := self library context: handle getProperty: (self cString: key) of: value.
+			  [ dictionary at: key put: (self valueOf: property exposure: aDictionary) ] ensure: [ self freeValue: property ] ] ]
+			  ensure: [ self freeValue: keys ].
+		  dictionary ]
 ]
 
 { #category : 'evaluating' }
@@ -296,6 +313,16 @@ QJSContext >> library [
 ]
 
 { #category : 'private - to Pharo' }
+QJSContext >> nested: aBlock [
+	"Reading an array or an object: no deeper than maxDepth, which also ends a cycle"
+
+	depth >= self class maxDepth ifTrue: [
+		QJSError signal: 'a JS value nests deeper than ' , self class maxDepth printString , ' levels' ].
+	depth := depth + 1.
+	^ aBlock ensure: [ depth := depth - 1 ]
+]
+
+{ #category : 'private - to Pharo' }
 QJSContext >> numberOf: value [
 
 	| float |
@@ -334,6 +361,7 @@ QJSContext >> runtime [
 QJSContext >> setRuntime: aRuntime [
 
 	runtime := aRuntime.
+	depth := 0.
 	handle := self library contextNew: aRuntime handle.
 	handle isNull ifTrue: [ QJSError signal: 'QuickJS could not create a context' ].
 	session := Smalltalk session.

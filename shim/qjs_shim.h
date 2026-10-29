@@ -45,13 +45,19 @@ typedef struct QJSValueBox QJSValueBox;
 int qjs_has_intl(void);
 int64_t qjs_live_owners(void);
 
-/* runtime: one per thread, owns the heap and the limits */
+/* runtime: one per thread, owns the heap and the limits. The timeout gives
+   every evaluation and every call from outside a deadline, which also
+   covers reading the result: JS that runs while Pharo reads it (getters,
+   toString, Proxy traps) stops once the deadline has passed. Reading plain
+   data runs no JS, so whoever reads a large result asks
+   qjs_runtime_deadline_passed in between. */
 QJSOwner *qjs_runtime_new(void);
 void qjs_runtime_release(QJSOwner *owner);
 void qjs_runtime_destroy(QJSOwner *owner);
 int qjs_runtime_is_live(QJSOwner *owner);
 void qjs_runtime_set_memory_limit(QJSOwner *owner, size_t limit);
 void qjs_runtime_set_timeout_ms(QJSOwner *owner, int64_t timeout_ms);
+int qjs_runtime_deadline_passed(QJSOwner *owner);
 
 /* context: a global object with the standard intrinsics;
    NULL if the runtime is released */
@@ -116,7 +122,9 @@ int qjs_binding_define(QJSContextBox *context, QJSValueBox *binding, const char 
 int64_t qjs_binding_id(QJSContextBox *context, QJSValueBox *value);
 int qjs_released_bindings(QJSOwner *owner, int64_t *ids, int capacity);
 
-/* structure: setters do not take over the value box */
+/* structure: setters do not take over the value box. qjs_array_length
+   answers -1 with the exception pending if reading the length throws (a
+   Proxy, the deadline). */
 int qjs_set_index(QJSContextBox *context, QJSValueBox *array, uint32_t index, QJSValueBox *value);
 int qjs_set_property(QJSContextBox *context, QJSValueBox *object, const char *name, QJSValueBox *value);
 int qjs_set_global(QJSContextBox *context, const char *name, QJSValueBox *value);
