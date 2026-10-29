@@ -358,12 +358,76 @@ static void test_functions(void)
     qjs_set_callback(NULL);
 }
 
+/* Reading a result runs JS too (getters, toString, Proxy traps); it stays
+   within the deadline of the evaluation that made the result. Without that
+   a failing check here hangs instead of failing. */
+static void test_reading_results(void)
+{
+    QJSOwner *rt = qjs_runtime_new();
+    QJSContextBox *ctx = qjs_context_new(rt);
+    QJSValueBox *v, *keys, *json, *p, *e;
+    size_t length;
+    char *utf8;
+
+    qjs_runtime_set_timeout_ms(rt, 200);
+    v = eval(ctx, "Object.keys = () => { while (true) {} }; ({b: 1, 2: 1, a: 1, 1: 1})");
+    keys = qjs_object_keys(ctx, v);
+    json = qjs_value_to_json(ctx, keys);
+    check("keys come in the order of Object.keys, whatever a script made of it",
+          string_equals(ctx, json, "[\"1\",\"2\",\"b\",\"a\"]"));
+    qjs_value_free(json);
+    qjs_value_free(keys);
+    qjs_value_free(v);
+
+    v = eval(ctx, "({ get a() { while (true) {} } })");
+    p = qjs_get_property(ctx, v, "a");
+    check("a getter run while reading the result stops at the deadline", qjs_value_type(ctx, p) == QJS_TYPE_EXCEPTION);
+    qjs_value_free(p);
+    e = qjs_exception(ctx);
+    check("as an interrupt", string_equals(ctx, e, "InternalError: interrupted"));
+    qjs_value_free(e);
+    check("the deadline has passed", qjs_runtime_deadline_passed(rt));
+    qjs_value_free(v);
+
+    v = eval(ctx, "new Proxy({}, { ownKeys() { while (true) {} } })");
+    keys = qjs_object_keys(ctx, v);
+    check("so does a Proxy trap asked for the keys", qjs_value_type(ctx, keys) == QJS_TYPE_EXCEPTION);
+    qjs_value_free(keys);
+    qjs_value_free(qjs_exception(ctx));
+    qjs_value_free(v);
+
+    v = eval(ctx, "new Proxy([], { get() { while (true) {} } })");
+    check("or for the length, which answers -1 then", qjs_array_length(ctx, v) == -1);
+    qjs_value_free(qjs_exception(ctx));
+    qjs_value_free(v);
+
+    /* what it answers then differs: Bellard NULL, quickjs-ng the message */
+    v = eval(ctx, "Error.prototype.toString = function () { while (true) {} }; null.x");
+    e = qjs_exception(ctx);
+    utf8 = qjs_value_to_utf8(ctx, e, &length);
+    check("and the toString of a thrown error", qjs_runtime_deadline_passed(rt));
+    qjs_bytes_free(utf8);
+    qjs_value_free(e);
+    qjs_value_free(v);
+
+    qjs_runtime_set_timeout_ms(rt, 0);
+    v = eval(ctx, "({a: 1})");
+    check("the next evaluation sets a deadline of its own",
+          !qjs_runtime_deadline_passed(rt) && qjs_value_type(ctx, v) == QJS_TYPE_OBJECT);
+    qjs_value_free(v);
+
+    qjs_context_destroy(ctx);
+    qjs_runtime_destroy(rt);
+    check("reading results leaves nothing behind", qjs_live_owners() == 0);
+}
+
 int main(void)
 {
     test_values();
     test_any_order();
     test_bindings();
     test_functions();
+    test_reading_results();
     printf("%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
     return failures ? 1 : 0;
 }

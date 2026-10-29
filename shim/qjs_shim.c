@@ -81,8 +81,7 @@ static int64_t now_ms(void)
    built against (the cast below). */
 static int interrupt_handler(void *runtime_or_context, void *opaque)
 {
-    QJSOwner *owner = opaque;
-    return owner->deadline_ms > 0 && now_ms() > owner->deadline_ms;
+    return qjs_runtime_deadline_passed(opaque);
 }
 
 /* Around every evaluation and every call of a JS function from Pharo. Only
@@ -97,10 +96,13 @@ static void enter_js(QJSOwner *owner)
     }
 }
 
+/* The deadline outlives the evaluation: Pharo reads the result afterwards,
+   and reading runs JS too (getters, toString, Proxy traps). That JS runs
+   within the same deadline and stops at once after it has passed, until the
+   next evaluation or call from outside sets a new one. */
 static void leave_js(QJSOwner *owner)
 {
-    if (--owner->depth == 0)
-        owner->deadline_ms = 0;
+    owner->depth--;
 }
 
 static void owner_unref(QJSOwner *owner)
@@ -259,6 +261,11 @@ void qjs_runtime_set_timeout_ms(QJSOwner *owner, int64_t timeout_ms)
 {
     if (owner)
         owner->timeout_ms = timeout_ms;
+}
+
+int qjs_runtime_deadline_passed(QJSOwner *owner)
+{
+    return owner && owner->deadline_ms > 0 && now_ms() > owner->deadline_ms;
 }
 
 QJSContextBox *qjs_context_new(QJSOwner *owner)
@@ -693,12 +700,15 @@ int64_t qjs_array_length(QJSContextBox *context, QJSValueBox *array)
 {
     JSValue length;
     int64_t result = 0;
+    int status;
     if (!context_live(context) || !value_live(array))
         return 0;
     length = JS_GetPropertyStr(context->ctx, array->value, "length");
-    JS_ToInt64(context->ctx, &result, length);
+    if (JS_IsException(length))
+        return -1;
+    status = JS_ToInt64(context->ctx, &result, length);
     JS_FreeValue(context->ctx, length);
-    return result;
+    return status < 0 ? -1 : result;
 }
 
 QJSValueBox *qjs_get_index(QJSContextBox *context, QJSValueBox *array, uint32_t index)
@@ -708,18 +718,29 @@ QJSValueBox *qjs_get_index(QJSContextBox *context, QJSValueBox *array, uint32_t 
     return box_value(context, JS_GetPropertyUint32(context->ctx, array->value, index));
 }
 
-/* Object.keys(object), as an array box */
+/* The keys Object.keys answers, as an array box. Taken through the C API,
+   so a script that replaces Object.keys has no say; a Proxy still runs its
+   traps, within the deadline. */
 QJSValueBox *qjs_object_keys(QJSContextBox *context, QJSValueBox *object)
 {
-    JSValue global, constructor, keys, result;
+    JSContext *ctx;
+    JSPropertyEnum *names;
+    uint32_t count;
+    JSValue keys, key;
+
     if (!context_live(context) || !value_live(object))
         return NULL;
-    global = JS_GetGlobalObject(context->ctx);
-    constructor = JS_GetPropertyStr(context->ctx, global, "Object");
-    keys = JS_GetPropertyStr(context->ctx, constructor, "keys");
-    result = JS_Call(context->ctx, keys, constructor, 1, &object->value);
-    JS_FreeValue(context->ctx, keys);
-    JS_FreeValue(context->ctx, constructor);
-    JS_FreeValue(context->ctx, global);
-    return box_value(context, result);
+    ctx = context->ctx;
+    if (JS_GetOwnPropertyNames(ctx, &names, &count, object->value, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) < 0)
+        return box_value(context, JS_EXCEPTION);
+    keys = JS_NewArray(ctx);
+    for (uint32_t i = 0; i < count && !JS_IsException(keys); i++) {
+        key = JS_AtomToString(ctx, names[i].atom);
+        if (JS_IsException(key) || JS_DefinePropertyValueUint32(ctx, keys, i, key, JS_PROP_C_W_E) < 0) {
+            JS_FreeValue(ctx, keys);
+            keys = JS_EXCEPTION;
+        }
+    }
+    JS_FreePropertyEnum(ctx, names, count);
+    return box_value(context, keys);
 }

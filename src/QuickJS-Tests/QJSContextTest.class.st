@@ -41,6 +41,15 @@ QJSContextTest >> testBoolean [
 ]
 
 { #category : 'tests' }
+QJSContextTest >> testCyclicResultEndsWithError [
+
+	self
+		should: [ context eval: 'const o = {}; o.self = o; o' ]
+		raise: QJSError
+		withExceptionDo: [ :error | self assert: (error messageText includesSubstring: 'nests deeper') ]
+]
+
+{ #category : 'tests' }
 QJSContextTest >> testEndlessLoopIsInterrupted [
 
 	runtime timeoutMilliseconds: 200.
@@ -62,6 +71,17 @@ QJSContextTest >> testFloat [
 QJSContextTest >> testFunctionResult [
 
 	self assert: (context eval: '[1, 2, 3].map(x => x * x).reduce((a, b) => a + b)') equals: 14
+]
+
+{ #category : 'tests' }
+QJSContextTest >> testGetterInTheResultRunsWithinTheDeadline [
+	"Reading the result runs JS too; without the deadline this test hangs the VM"
+
+	runtime timeoutMilliseconds: 200.
+	self
+		should: [ context eval: '({ get a() { while (true) {} } })' ]
+		raise: QJSError
+		withExceptionDo: [ :error | self assert: error messageText equals: 'InternalError: interrupted' ]
 ]
 
 { #category : 'tests' }
@@ -105,6 +125,15 @@ QJSContextTest >> testMemoryHogEndsWithError [
 ]
 
 { #category : 'tests' }
+QJSContextTest >> testNestedResultBelowTheLimitIsRead [
+
+	| value |
+	value := context eval: 'let a = 1; for (let i = 0; i < 100; i++) a = [a]; a'.
+	100 timesRepeat: [ value := value first ].
+	self assert: value equals: 1
+]
+
+{ #category : 'tests' }
 QJSContextTest >> testNullAndUndefinedAreNil [
 
 	self assert: (context eval: 'null') isNil.
@@ -115,6 +144,26 @@ QJSContextTest >> testNullAndUndefinedAreNil [
 QJSContextTest >> testOnePlusOne [
 
 	self assert: (context eval: '1 + 1') equals: 2
+]
+
+{ #category : 'tests' }
+QJSContextTest >> testReplacedObjectKeysDoesNotReadTheResult [
+
+	runtime timeoutMilliseconds: 200.
+	self
+		assert: (context eval: 'Object.keys = () => { while (true) {} }; ({a: 1})')
+		equals: (Dictionary with: 'a' -> 1)
+]
+
+{ #category : 'tests' }
+QJSContextTest >> testSharedPartsInTheResultStopAtTheDeadline [
+	"2^40 elements from a few hundred bytes of JS. Reading arrays runs no JS, so only asking for the deadline in between ends it"
+
+	runtime timeoutMilliseconds: 200.
+	self
+		should: [ context eval: 'let a = [1]; for (let i = 0; i < 40; i++) a = [a, a]; a' ]
+		raise: QJSError
+		withExceptionDo: [ :error | self assert: error messageText equals: 'InternalError: interrupted' ]
 ]
 
 { #category : 'tests' }
@@ -138,4 +187,13 @@ QJSContextTest >> testThrowSignalsErrorWithStack [
 		withExceptionDo: [ :error |
 			self assert: error messageText equals: 'TypeError: boom'.
 			self assert: (error jsStack includesSubstring: 'at f') ]
+]
+
+{ #category : 'tests' }
+QJSContextTest >> testToStringOfAThrownErrorRunsWithinTheDeadline [
+
+	runtime timeoutMilliseconds: 200.
+	self
+		should: [ context eval: 'Error.prototype.toString = function () { while (true) {} }; null.x' ]
+		raise: QJSError
 ]

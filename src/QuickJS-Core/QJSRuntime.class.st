@@ -1,5 +1,5 @@
 "
-I am a QuickJS runtime: one heap with its limits. A runtime belongs to one thread; calls go through the same-thread runner, so a running script holds the VM until it ends or its timeout strikes.
+I am a QuickJS runtime: one heap with its limits. A runtime belongs to one thread; calls go through the same-thread runner, so a running script holds the VM until it ends or its timeout strikes. The timeout also covers reading the result into Pharo, which runs JS too (getters, toString, Proxy traps).
 
 Usually you do not hold me yourself: `QJSRuntime evaluate: '6 * 7'` or `QJSRuntime during: [ :context | ... ]` give a fresh runtime and context and release both afterwards. A runtime costs next to nothing; the context is what takes time to build (some 40-70 µs).
 
@@ -64,6 +64,13 @@ QJSRuntime >> bindingAt: anId [
 QJSRuntime >> bindingCount [
 
 	^ bindings size
+]
+
+{ #category : 'limits' }
+QJSRuntime >> checkDeadline [
+	"Reading plain data runs no JS, so the deadline does not stop it by itself; reading a large result asks in between"
+
+	(self library runtimeDeadlinePassed: handle) = 1 ifTrue: [ QJSError signal: 'InternalError: interrupted' ]
 ]
 
 { #category : 'private' }
