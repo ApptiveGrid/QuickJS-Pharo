@@ -3,6 +3,8 @@ I am a QuickJS context: a global object in a runtime. #eval: runs a script and a
 
 Values cross in both directions the same way: nil and null (undefined becomes nil too), Booleans, numbers as Integer or Float, strings, sequenceable collections and arrays, dictionaries and plain objects. Every other Pharo object reaches JS as a binding: a JS object with one read-only property per exposed selector without arguments (`grid.name`) and one method per other exposed selector (`grid.rowAt_(1)`). A method names itself in JS with a pragma (`at: key put: value <jsName: 'atPut'>`); without one the name is PharoJS-style (#at:put: becomes at_put_). Which selectors are exposed and what they are called are separate (see QJSBinding). A binding coming back from JS is the Pharo object itself.
 
+A proxy that hands on what it does not understand, like the one of an object database, has a class of its own. It reaches JS as the object it stands for (Object>>qjsObject), so the class of that object decides the selectors and their names, and that object comes back.
+
 	context at: 'grid' put: aGrid exposing: #(name rows).
 	context at: 'grid' put: aGrid exposing: { AGGrid -> #(name rows). AGRow -> #(id name) }.
 
@@ -139,22 +141,24 @@ QJSContext >> bindingBoxFor: anObject exposure: aDictionary [
 
 { #category : 'private - to JS' }
 QJSContext >> boxFor: anObject exposure: aDictionary [
-	"A new value box for anObject; the caller frees it"
+	"A new value box for anObject; the caller frees it. A proxy is boxed as the object it stands for"
 
-	anObject ifNil: [ ^ self library newNull: handle ].
-	anObject == true ifTrue: [ ^ self library context: handle newBool: 1 ].
-	anObject == false ifTrue: [ ^ self library context: handle newBool: 0 ].
-	anObject isInteger ifTrue: [
-		^ (anObject between: -9223372036854775808 and: 9223372036854775807)
-			  ifTrue: [ self library context: handle newInt64: anObject ]
-			  ifFalse: [ self library context: handle newFloat64: anObject asFloat ] ].
-	anObject isNumber ifTrue: [ ^ self library context: handle newFloat64: anObject asFloat ].
-	(anObject isString or: [ anObject isCharacter ]) ifTrue: [ ^ self stringBoxFor: anObject asString ].
-	anObject isDictionary ifTrue: [ ^ self objectBoxFor: anObject exposure: aDictionary ].
-	(anObject isCollection and: [ anObject isSequenceable ]) ifTrue: [
-		^ self arrayBoxFor: anObject exposure: aDictionary ].
-	(anObject isKindOf: QJSFunction) ifTrue: [ ^ self functionBoxFor: anObject ].
-	^ self bindingBoxFor: anObject exposure: aDictionary
+	| object |
+	object := anObject qjsObject.
+	object ifNil: [ ^ self library newNull: handle ].
+	object == true ifTrue: [ ^ self library context: handle newBool: 1 ].
+	object == false ifTrue: [ ^ self library context: handle newBool: 0 ].
+	object isInteger ifTrue: [
+		^ (object between: -9223372036854775808 and: 9223372036854775807)
+			  ifTrue: [ self library context: handle newInt64: object ]
+			  ifFalse: [ self library context: handle newFloat64: object asFloat ] ].
+	object isNumber ifTrue: [ ^ self library context: handle newFloat64: object asFloat ].
+	(object isString or: [ object isCharacter ]) ifTrue: [ ^ self stringBoxFor: object asString ].
+	object isDictionary ifTrue: [ ^ self objectBoxFor: object exposure: aDictionary ].
+	(object isCollection and: [ object isSequenceable ]) ifTrue: [
+		^ self arrayBoxFor: object exposure: aDictionary ].
+	(object isKindOf: QJSFunction) ifTrue: [ ^ self functionBoxFor: object ].
+	^ self bindingBoxFor: object exposure: aDictionary
 ]
 
 { #category : 'evaluating' }
@@ -234,7 +238,7 @@ QJSContext >> exposureFor: anObject from: selectorsOrTable [
 		         ifTrue: [ selectorsOrTable ]
 		         ifFalse: [
 			         (selectorsOrTable allSatisfy: [ :each | each isString ])
-				         ifTrue: [ Dictionary with: anObject class -> selectorsOrTable ]
+				         ifTrue: [ Dictionary with: anObject qjsObject class -> selectorsOrTable ]
 				         ifFalse: [ selectorsOrTable asDictionary ] ].
 	^ table collect: [ :selectors |
 		  selectors asArray collect: [ :each |
