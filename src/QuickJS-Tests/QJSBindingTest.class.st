@@ -202,6 +202,26 @@ QJSBindingTest >> testPlainValues [
 ]
 
 { #category : 'tests' }
+QJSBindingTest >> testProxiesInACollectionUseTheTable [
+
+	context
+		at: 'rows'
+		put: (grid rows collect: [ :each | QJSTestProxy on: each ])
+		exposing: { (QJSTestRow -> #( name )) }.
+	self assert: (context eval: 'rows.map(r => r.name)') equals: #( 'a' 'b' )
+]
+
+{ #category : 'tests' }
+QJSBindingTest >> testProxyReachesJSAsItsObject [
+	"a proxy has a class of its own; JS gets the object it stands for, with the selectors of that object's class, and that object comes back"
+
+	context at: 'grid' put: (QJSTestProxy on: grid) exposing: #( name ).
+	self assert: (context eval: 'grid.name') equals: 'Kunden'.
+	self assert: (context eval: 'Object.getOwnPropertyNames(grid)') equals: #( 'name' ).
+	self assert: (context eval: 'grid') identicalTo: grid
+]
+
+{ #category : 'tests' }
 QJSBindingTest >> testReleasedBindingsAreDropped [
 
 	context at: 'tmp' put: grid exposing: #( name ).

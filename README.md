@@ -40,7 +40,7 @@ context at: 'grid' put: aGrid exposing: {
 context eval: 'grid.rows.map(r => r.name)'
 ```
 
-The table applies to everything reachable through the binding. An object gets the selectors of the nearest class in its hierarchy that has an entry. Without an entry it reaches JS opaque: JS can hold it and pass it back, but call nothing on it. Values cross as values in both directions: `nil`, Booleans, numbers, strings, sequenceable collections and dictionaries. A binding that comes back from JS is the Pharo object itself. An error in Pharo becomes a JS `Error` that JS can catch. `context at: 'n' put: 42` sets a plain value.
+The table applies to everything reachable through the binding. An object gets the selectors of the nearest class in its hierarchy that has an entry. Without an entry it reaches JS opaque: JS can hold it and pass it back, but call nothing on it. Values cross as values in both directions: `nil`, Booleans, numbers, strings, sequenceable collections and dictionaries. A binding that comes back from JS is the Pharo object itself. A proxy that hands on what it does not understand, like the one of an object database, reaches JS as the object it stands for: every object is asked for `#qjsObject` first, which `Object` answers with itself, so the class of the real object decides the selectors. An error in Pharo becomes a JS `Error` that JS can catch. `context at: 'n' put: 42` sets a plain value.
 
 A call from JS into Pharo costs some 13 µs. The runtime keeps the objects handed to JS until JS lets go of them; it forgets them after the next evaluation.
 
